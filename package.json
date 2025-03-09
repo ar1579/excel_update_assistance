@@ -1,0 +1,22 @@
+{
+    "name": "excel-updater",
+    "version": "1.0.0",
+    "description": "Script to update CSV file using OpenAI API",
+    "private": true,
+    "scripts": {
+        "test-openai": "ts-node test-openai-connection.ts",
+        "test-csv": "ts-node test-csv-read.ts",
+        "update-csv": "ts-node update-csv.ts"
+    },
+    "dependencies": {
+        "@types/papaparse": "^5.3.15",
+        "dotenv": "^16.4.5",
+        "openai": "^4.28.0",
+        "papaparse": "^5.5.2"
+    },
+    "devDependencies": {
+        "@types/node": "^20.11.30",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.4.2"
+    }
+}

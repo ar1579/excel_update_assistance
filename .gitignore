@@ -1,0 +1,26 @@
+# Create .gitignore file
+echo "# Node.js dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Backup files
+*_backup_*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript compilation output
+dist/
+build/
+
+# IDE files
+.vscode/
+.idea/" > .gitignore
