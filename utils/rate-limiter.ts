@@ -1,77 +1,95 @@
+import { OpenAI } from "openai"
+import dotenv from "dotenv"
 import fs from "fs"
 import path from "path"
-import Papa from "papaparse"
 
-/**
- * Creates a backup of a file
- * @param filePath Path to the file to backup
- * @returns Path to the backup file
- */
-export function createBackup(filePath: string): string {
-    const timestamp = new Date().toISOString().replace(/:/g, "-")
-    const fileExt = path.extname(filePath)
-    const fileName = path.basename(filePath, fileExt)
-    const dirName = path.dirname(filePath)
+// Load environment variables
+dotenv.config()
 
-    const backupPath = path.join(dirName, `${fileName}_backup_${timestamp}${fileExt}`)
-
-    fs.copyFileSync(filePath, backupPath)
-    return backupPath
+// Create logs directory if it doesn't exist
+const logsDir = path.join(process.cwd(), "logs")
+if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true })
 }
 
-/**
- * Interface for CSV records
- */
-export interface CsvRecord {
-    [key: string]: string
+// Log file path
+const LOG_FILE_PATH = path.join(logsDir, `api_test_${new Date().toISOString().replace(/:/g, "-")}.txt`)
+
+// Helper function to log messages
+function log(message: string) {
+    const timestamp = new Date().toISOString()
+    const logMessage = `[${timestamp}] ${message}`
+    console.log(logMessage)
+    fs.appendFileSync(LOG_FILE_PATH, logMessage + "\n")
 }
 
-/**
- * Reads a CSV file and returns the parsed data
- * @param filePath Path to the CSV file
- * @returns Parsed CSV data and headers
- */
-export function readCsvFile(filePath: string) {
-    if (!fs.existsSync(filePath)) {
-        throw new Error(`File not found: ${filePath}`)
+async function testOpenAIConnection() {
+    log("Testing OpenAI API connection...")
+
+    // Check if API key exists
+    if (!process.env.OPENAI_API_KEY) {
+        log("❌ ERROR: OPENAI_API_KEY not found in environment variables.")
+        log("Please make sure you have created a .env file with your OpenAI API key.")
+        return
     }
 
-    const fileContent = fs.readFileSync(filePath, "utf8")
-    const parseResult = Papa.parse<CsvRecord>(fileContent, {
-        header: true,
-        skipEmptyLines: true,
-    })
+    try {
+        // Initialize OpenAI client
+        const openai = new OpenAI({
+            apiKey: process.env.OPENAI_API_KEY,
+        })
 
-    return {
-        records: parseResult.data,
-        headers: parseResult.meta.fields || [],
+        // Test API connection with a simple request
+        log("Sending test request to OpenAI API...")
+        const response = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [
+                {
+                    role: "user",
+                    content: "Hello, this is a test message. Please respond with 'OpenAI API is working correctly.'",
+                },
+            ],
+            max_tokens: 20,
+        })
+
+        // Check response
+        const content = response.choices[0]?.message?.content || ""
+        log(`Response received: "${content}"`)
+
+        if (content.includes("working")) {
+            log("✅ SUCCESS: OpenAI API connection is working correctly!")
+            log("Model: " + response.model)
+            log("Completion tokens: " + response.usage?.completion_tokens)
+            log("Prompt tokens: " + response.usage?.prompt_tokens)
+            log("Total tokens: " + response.usage?.total_tokens)
+        } else {
+            log("⚠️ WARNING: Received unexpected response from OpenAI API.")
+            log("The API is connected, but the response was not as expected.")
+        }
+    } catch (error: any) {
+        log(`❌ ERROR: Failed to connect to OpenAI API: ${error.message || "Unknown error"}`)
+
+        // Check for specific error types
+        if (error.message && typeof error.message === "string") {
+            if (error.message.includes("401")) {
+                log("This usually indicates an invalid API key. Please check your API key and try again.")
+            } else if (error.message.includes("429")) {
+                log("You have exceeded your API rate limit or quota. Please check your OpenAI account.")
+            } else if (error.message.includes("timeout")) {
+                log("The request timed out. This could be due to network issues or high server load.")
+            }
+        }
+
+        log("Full error details:")
+        log(JSON.stringify(error, null, 2))
     }
+
+    log("Test completed. Log saved to: " + LOG_FILE_PATH)
 }
 
-/**
- * Writes data to a CSV file
- * @param filePath Path to the CSV file
- * @param records Array of records to write
- * @param headers Array of column headers
- */
-export function writeCsvFile(filePath: string, records: CsvRecord[], headers: string[]) {
-    const csv = Papa.unparse(records, {
-        header: true,
-        columns: headers,
-    })
-
-    fs.writeFileSync(filePath, csv)
-    return filePath
-}
-
-/**
- * Ensures a directory exists, creating it if necessary
- * @param dirPath Path to the directory
- */
-export function ensureDirectoryExists(dirPath: string) {
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true })
-    }
-    return dirPath
-}
+// Run the test
+testOpenAIConnection().catch((error: any) => {
+    log(`Unhandled error: ${error.message || "Unknown error"}`)
+    process.exit(1)
+})
 
