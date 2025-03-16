@@ -1,49 +1,75 @@
 import fs from "fs"
 import path from "path"
 
-// Create logs directory if it doesn't exist
-const logsDir = path.join(process.cwd(), "logs")
-if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir, { recursive: true })
+// Log levels
+export type LogLevel = "debug" | "info" | "warning" | "error" | "success"
+
+// Logger interface
+export interface Logger {
+    debug(message: string): void
+    info(message: string): void
+    warn(message: string): void
+    error(message: string): void
 }
 
-/**
- * Creates a logger that writes to both console and a log file
- * @param logFileName Name of the log file (without extension)
- * @returns A logging function
- */
-export function createLogger(logFileName: string) {
-    const timestamp = new Date().toISOString().replace(/:/g, "-")
-    const logFilePath = path.join(logsDir, `${logFileName}_${timestamp}.txt`)
+// Log function
+export function log(message: string, level: LogLevel = "info"): string {
+    const timestamp = new Date().toISOString()
+    const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`
 
-    // Create the log file
-    fs.writeFileSync(logFilePath, `=== Log started at ${new Date().toISOString()} ===\n\n`)
+    // Log to console
+    switch (level) {
+        case "debug":
+            console.debug(logMessage)
+            break
+        case "info":
+            console.info(logMessage)
+            break
+        case "warning":
+            console.warn(logMessage)
+            break
+        case "error":
+            console.error(logMessage)
+            break
+        case "success":
+            console.log(`\x1b[32m${logMessage}\x1b[0m`) // Green color for success
+            break
+        default:
+            console.log(logMessage)
+    }
 
-    // Return the logging function
-    return function log(message: string, level: "info" | "success" | "warning" | "error" = "info") {
-        const timestamp = new Date().toISOString()
+    // Log to file (optional)
+    const logDir = path.join(process.cwd(), "logs")
+    if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true })
+    }
+    const logFilePath = path.join(logDir, "app.log") // Single log file
+    fs.appendFileSync(logFilePath, logMessage + "\n")
 
-        // Add prefix based on log level
-        let prefix = ""
-        switch (level) {
-            case "success":
-                prefix = "✅ SUCCESS: "
-                break
-            case "warning":
-                prefix = "⚠️ WARNING: "
-                break
-            case "error":
-                prefix = "❌ ERROR: "
-                break
-            default:
-                prefix = ""
-        }
+    return logMessage
+}
 
-        const logMessage = `[${timestamp}] ${prefix}${message}`
-        console.log(logMessage)
-        fs.appendFileSync(logFilePath, logMessage + "\n")
+// Create logger function
+export function createLogger(moduleName: string): Logger {
+    const logDir = path.join(process.cwd(), "logs")
 
-        return logFilePath // Return the log file path for reference
+    // Ensure log directory exists
+    if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true })
+    }
+
+    const logFilePath = path.join(logDir, `${moduleName}_${new Date().toISOString().replace(/:/g, "-")}.log`)
+
+    // Create log file
+    if (!fs.existsSync(logFilePath)) {
+        fs.writeFileSync(logFilePath, "")
+    }
+
+    return {
+        debug: (message: string) => log(`[${moduleName}] ${message}`, "debug"),
+        info: (message: string) => log(`[${moduleName}] ${message}`, "info"),
+        warn: (message: string) => log(`[${moduleName}] ${message}`, "warning"),
+        error: (message: string) => log(`[${moduleName}] ${message}`, "error"),
     }
 }
 

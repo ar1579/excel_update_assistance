@@ -1,18 +1,22 @@
 // utils/index.ts
 // Export logging utilities
-export * from './logging';
+export * from "./logging"
 
 // Export error handling utilities
-export * from './error-handler';
+export * from "./error-handler"
 
 // Export file utilities
 export {
-    CsvRecord,
     createBackup,
-    ensureDirectoryExists,
-    readCsvFile,
-    writeCsvFile,
-} from './file-utils';
+    loadCsvData,
+    saveCsvData,
+    createLookupMap,
+} from "./file-utils"
 
-// TODO: Add rate-limiter exports once we know what's in the file
-// export { ... } from './rate-limiter';
+// Export string utilities
+export {
+    extractDomainFromUrl,
+    normalizeCompanyName,
+    generateUniqueId,
+} from "./string-utils"
+
