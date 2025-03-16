@@ -1,1 +1,1 @@
-﻿use_case_id_primary_key,model_id_foreign_key,primary_use_case,secondary_use_cases,specialized_domains,supported_tasks,limitations,typical_use_cases
+use_case_id,model_id,primary_use_case,secondary_use_cases,specialized_domains,supported_tasks,limitations,createdAt,updatedAt

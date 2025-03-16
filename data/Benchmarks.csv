@@ -1,1 +1,1 @@
-﻿benchmark_id_primary_key,model_id_foreign_key,benchmark_name,benchmark_score,benchmark_details
+benchmark_id,model_id,benchmark_name,benchmark_score,benchmark_details,createdAt,updatedAt

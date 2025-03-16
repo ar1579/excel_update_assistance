@@ -1,1 +1,1 @@
-﻿performance_id_primary_key,model_id_foreign_key,performance_metrics,performance_score,accuracy_metrics,precision_metrics,recall_metrics,f1_score
+performance_id,model_id,performance_metrics,accuracy_metrics,precision_metrics,recall_metrics,f1_score,createdAt,updatedAt

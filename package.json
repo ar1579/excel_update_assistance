@@ -6,12 +6,20 @@
     "scripts": {
         "test-openai": "ts-node scripts/test-openai-connection.ts",
         "test-csv": "ts-node scripts/test-csv-read.ts",
-        "update-csv": "ts-node scripts/update-csv.ts"
+        "update-csv": "ts-node scripts/update-csv.ts",
+        "process-companies": "ts-node scripts/csv-processors/process-companies.ts",
+        "test-company-processor": "ts-node scripts/test-company-processor.ts",
+        "process-platforms": "ts-node scripts/csv-processors/process-platforms.ts",
+        "test-platform-processor": "ts-node scripts/test-platform-processor.ts",
+        "process-models": "ts-node scripts/csv-processors/process-models.ts",
+        "test-model-processor": "ts-node scripts/test-model-processor.ts",
+        "process-technical-specifications": "ts-node scripts/csv-processors/process-technical-specifications.ts",
+        "test-technical-specifications-processor": "ts-node scripts/test-technical-specifications-processor.ts"
     },
     "dependencies": {
         "@types/papaparse": "^5.3.15",
-        "dotenv": "^16.4.5",
-        "openai": "^4.28.0",
+        "dotenv": "^16.4.7",
+        "openai": "^4.87.3",
         "papaparse": "^5.5.2"
     },
     "devDependencies": {

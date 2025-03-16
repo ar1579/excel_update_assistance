@@ -45,6 +45,7 @@ project-root/
 - **test-csv-read.ts**: Reads and parses CSV files.
 - **test-openai-connection.ts**: Sends a request to OpenAI API to verify connection.
 - **update-csv.ts**: Hardcoded to update the "AI Hierarchical Categorization System.csv" file.
+- **generate-ai-toolkit-csv.ts**: Generates 26 CSV files implementing the AI Toolkit database schema.
 
 ### Utilities
 - **error-handler.ts**: Provides functions for error management.
@@ -68,7 +69,8 @@ excel-updater@1.0.0 cd ""
 ### Data Files
 The project processes multiple CSV files, each requiring a unique processing script:
 - AI Hierarchical Categorization System.csv
-- API.csv
+-- API.csv
+- api_integrations.csv
 - Benchmarks.csv
 - Community.csv
 - Companies.csv
@@ -78,9 +80,16 @@ The project processes multiple CSV files, each requiring a unique processing scr
 - Licenses.csv
 - Market.csv
 - Models.csv
+- model_benchmarks.csv
+- model_use_cases.csv
 - Performance.csv
 - Platforms.csv
+- platform_certifications.csv
+- platform_features.csv
+- platform_licenses.csv
 - Pricing.csv
+- README.md
+- schema-overview.md
 - Security_and_Compliance.csv
 - Support.csv
 - Technical_Specifications.csv
@@ -150,52 +159,114 @@ The project is now ready for **full implementation of the CSV processors** and *
 # Brief Description of CSV Files
 
 ## API.csv
-**Purpose:** This file stores API-related information for AI platforms, including standards, authentication methods, and integration capabilities.
-**Current Contents:** The file contains platform names (e.g., "Zyro AI") as foreign keys with empty fields for API standards, authentication methods, webhook support, third-party integrations, export formats, and import capabilities.
+**Purpose:** Documents API specifications, authentication methods, and integrations for AI platforms.
+**Current Contents:** The file has an empty schema
+
+## api_integrations.csv
+**Purpose:** Join table linking APIs with their supported third-party integrations.
+**Current Contents:** The file has an empty schema
 
 ## Benchmarks.csv
-**Purpose:** This file stores performance benchmark data for AI platforms to enable comparative analysis.
-**Current Contents:** The file has an empty schema and likely contains minimal data. It is structured to track benchmark results for different AI platforms.
+**Purpose:** Stores benchmark test results and performance scores for AI models.
+**Current Contents:** The file has an empty schema
 
 ## Community.csv
-**Purpose:** Stores community engagement and resources around AI platforms.
-**Current Content:** Contains platform names with empty fields for community size, engagement scores, user ratings, GitHub repositories, Stack Overflow tags, academic papers, and case studies. The structure is designed to assess the ecosystem and support around each platform. 
+**Purpose:** Tracks engagement metrics and community support resources for AI platforms.
+**Current Contents:** The file has an empty schema
 
 ## Companies.csv
 **Purpose:** Stores information about companies that develop AI platforms.
-**Current Content:** The schema is empty, suggesting this is a placeholder file that hasn't been fully defined yet. It would typically contain company names, locations, founding dates, and other company-specific information.
+**Current Contents:** The file has an empty schema
 
 ## Documentation.csv
-**Purpose:** Stores documentation resources and learning materials for AI platforms.
-**Current Content:** Contains platform names with empty fields for documentation quality, URLs (documentation, FAQ, forum), code example availability, supported programming languages, video tutorial availability, and learning curve ratings. The structure is ready for comprehensive documentation tracking.
+**Purpose:** Tracks documentation resources and learning materials for AI platforms.
+**Current Contents:** The file has an empty schema
 
 ## Ethics.csv
-**Purpose:** Stores ethical considerations and frameworks for AI platforms.
-**Current Content:** The schema is empty, suggesting this is a placeholder file that hasn't been fully defined yet. It may be intended to track ethical guidelines, compliance information, or responsible AI practices.
+**Purpose:** Stores ethical considerations, bias evaluations, and fairness metrics for AI models.
+**Current Contents:** The file has an empty schema
 
 ## Features.csv
-**Purpose:** Stores information about AI platform features and capabilities.
-**Current Content:** Contains platform names (e.g., "Zyro AI") with empty fields for notable features, explainability features, customization options, and bias mitigation approaches. The file has a structure ready for documenting platform-specific features but currently lacks populated data in most columns.
+**Purpose:** Stores key features and capabilities of AI platforms.
+**Current Contents:** The file has an empty schema
 
 ## Licenses.csv
-**Purpose:** This file stores licensing information for AI platforms, including license types and open-source status.
-**Current Contents:** The file contains platform names as foreign keys with empty fields for license type, open-source status, license name, license URL, and expiration date.
+**Purpose:** Stores licensing information, including open-source status for AI platforms.
+**Current Contents:** The file has an empty schema
 
 ## Market.csv
-**Purpose:** This file stores market-related information for AI platforms, including adoption metrics and competitive positioning.
-**Current Contents:** The file contains platform names as foreign keys with empty fields for user count, adoption rate, industry penetration, customer profiles, success stories, competitors, advantages, market share, analyst ratings, and industry awards.
+**Purpose:** Stores market-related information, including user adoption rates and competitive positioning.
+**Current Contents:** The file has an empty schema
 
 ## Models.csv
-**Purpose:** This file stores detailed information about AI models associated with each platform.
-**Current Contents:** The file contains platform names as foreign keys with empty fields for model family, version, variants, size, type, architecture, parameter count, context window size, and token limits.
+**Purpose:** Stores information about AI models associated with platforms.
+**Current Contents:** The file has an empty schema
+
+## model_benchmarks.csv
+**Purpose:** Join table linking AI models with their benchmark results.
+**Current Contents:** The file has an empty schema
+
+## model_use_cases.csv
+**Purpose:** Join table linking AI models with their supported use cases.
+**Current Contents:** The file has an empty schema
 
 ## Performance.csv
-**Purpose:** This file stores performance metrics and capabilities of AI platforms.
-**Current Contents:** The file has an empty schema and likely contains minimal data. It is structured to track performance metrics for different AI platforms.
+**Purpose:** Captures performance metrics and accuracy scores of AI models.
+**Current Contents:** The file has an empty schema
 
 ## Platforms.csv
-**Purpose:** This file stores core information about AI platforms and serves as the central reference for platform details.
-**Current Contents:** The file contains platform names as primary keys, some platform URLs, and empty fields for company name, platform category, sub-category, description, launch date, status, availability, API availability, and integration options.
+**Purpose:** Core table storing AI platform details and categorization.
+**Current Contents:** The file has an empty schema
 
+## platform_certifications.csv
+**Purpose:** Join table linking platforms with their security certifications.
+**Current Contents:** The file has an empty schema
 
+## platform_features.csv
+**Purpose:** Join table linking platforms with their supported features.
+**Current Contents:** The file has an empty schema
+
+## platform_licenses.csv
+**Purpose:** Join table linking platforms with their available license types.
+**Current Contents:** The file has an empty schema
+
+## Pricing.csv
+**Purpose:** Contains pricing models and cost information for AI platforms.
+**Current Contents:** The file has an empty schema
+
+## README.md
+**Purpose:** Documentation file explaining the structure and purpose of all database tables.
+**Current Contents:** The file contains detailed descriptions of all tables and fields
+
+## schema-overview.md
+**Purpose:** Provides a high-level overview of the complete database schema structure.
+**Current Contents:** The file contains a tabular overview of all tables and relationships
+
+## Security_and_Compliance.csv
+**Purpose:** Records security certifications and compliance standards for AI platforms.
+**Current Contents:** The file has an empty schema
+
+## Support.csv
+**Purpose:** Captures customer support options and service level agreements for AI platforms.
+**Current Contents:** The file has an empty schema
+
+## Technical_Specifications.csv
+**Purpose:** Tracks technical specifications and requirements of AI models.
+**Current Contents:** The file has an empty schema
+
+## Training.csv
+**Purpose:** Tracks training methodologies and fine-tuning capabilities of AI models.
+**Current Contents:** The file has an empty schema
+
+## Trials.csv
+**Purpose:** Stores free trial details and usage limitations for AI platforms.
+**Current Contents:** The file has an empty schema
+
+## Use_Cases.csv
+**Purpose:** Documents use cases and application areas for AI models.
+**Current Contents:** The file has an empty schema
+
+## Versioning.csv
+**Purpose:** Maintains version history and update details for AI platforms.
+**Current Contents:** The file has an empty schema
     

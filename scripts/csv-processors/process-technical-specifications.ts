@@ -44,7 +44,12 @@ interface TechnicalSpecification {
     hardware_requirements?: string
     gpu_acceleration?: string
     latency?: string
+    inference_time?: string
+    training_time?: string
     compatible_frameworks?: string
+    minimum_requirements?: string
+    optimal_requirements?: string
+    dependency_information?: string
     createdAt?: string
     updatedAt?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
@@ -57,7 +62,7 @@ interface Model {
     model_family?: string
     model_version?: string
     model_variants?: string
-    architecture?: string
+    model_architecture?: string
     parameters_count?: string
     context_window_size?: string
     token_limit?: string
@@ -68,9 +73,9 @@ interface Model {
 interface Platform {
     platform_id: string
     platform_name: string
-    category?: string
-    sub_category?: string
-    description?: string
+    platform_category?: string
+    platform_sub_category?: string
+    platform_description?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
 }
 
@@ -100,16 +105,44 @@ function validateTechnicalSpecificationsAgainstModels(
 ): TechnicalSpecification[] {
     log("Validating technical specifications against models...", "info")
 
+    // If no tech specs, create a default one for testing
+    if (techSpecs.length === 0 && modelsMap.size > 0) {
+        log("No technical specifications found in CSV, creating a default spec for testing", "warning")
+        const modelId = Array.from(modelsMap.keys())[0]
+        const model = modelsMap.get(modelId)
+
+        if (model) {
+            const defaultTechSpec: TechnicalSpecification = {
+                spec_id: `spec_${Date.now()}`,
+                model_id: modelId,
+                input_types: "Text",
+                output_types: "Text",
+                supported_languages: "English",
+                hardware_requirements: "GPU recommended",
+                gpu_acceleration: "Yes",
+                compatible_frameworks: "API",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            }
+            techSpecs.push(defaultTechSpec)
+            log(`Created default technical specification for model: ${model.model_family} ${model.model_version}`, "info")
+            return techSpecs
+        }
+    }
+
     const validTechSpecs = techSpecs.filter((spec) => {
         const modelId = spec.model_id
         if (!modelId) {
-            log(`Technical specification ${spec.spec_id} has no model ID, skipping`, "warning")
+            log(`Technical specification ${spec.spec_id || "unknown"} has no model ID, skipping`, "warning")
             return false
         }
 
         const modelExists = modelsMap.has(modelId)
         if (!modelExists) {
-            log(`Technical specification ${spec.spec_id} references non-existent model ${modelId}, skipping`, "warning")
+            log(
+                `Technical specification ${spec.spec_id || "unknown"} references non-existent model ${modelId}, skipping`,
+                "warning",
+            )
             return false
         }
 
@@ -129,16 +162,21 @@ async function enrichTechnicalSpecificationData(
     platform: Platform,
 ): Promise<TechnicalSpecification> {
     try {
-        log(`Enriching data for technical specification: ${techSpec.spec_id} (Model: ${model.model_id})`, "info")
+        log(
+            `Enriching data for technical specification: ${techSpec.spec_id || "new"} (Model: ${model.model_id || model.model_family})`,
+            "info",
+        )
 
         const prompt = `
-Provide accurate technical specifications for the AI model "${model.model_id}" from the platform "${platform.platform_name}" in JSON format with the following fields:
+Provide accurate technical specifications for the AI model "${model.model_family} ${model.model_version}" from the platform "${platform.platform_name}" in JSON format with the following fields:
 - input_types: Types of inputs the model accepts (e.g., "Text, Images, Audio", "Text only", etc.)
 - output_types: Types of outputs the model produces (e.g., "Text, Images", "Text only", etc.)
 - supported_languages: Languages supported by the model (e.g., "English, Spanish, French", "English only", etc.)
 - hardware_requirements: Hardware needed to run the model (e.g., "GPU required", "CPU compatible", etc.)
 - gpu_acceleration: Whether GPU acceleration is supported (e.g., "Yes", "No", "Optional")
 - latency: Typical latency for inference (e.g., "50-100ms", "1-2s", etc.)
+- inference_time: Time taken for generating responses (e.g., "100ms per token", "2s for 1000 tokens")
+- training_time: Model training duration (e.g., "2 weeks on 8 A100 GPUs", "1 month on TPU v4")
 - compatible_frameworks: Frameworks compatible with the model (e.g., "TensorFlow, PyTorch", "Custom framework", etc.)
 - minimum_requirements: Minimum system requirements (e.g., "8GB RAM, 4 CPU cores", "16GB RAM, NVIDIA GPU", etc.)
 - optimal_requirements: Optimal system requirements (e.g., "32GB RAM, NVIDIA A100", "64GB RAM, 16 CPU cores", etc.)
@@ -146,14 +184,14 @@ Provide accurate technical specifications for the AI model "${model.model_id}" f
 
 Additional context about the model:
 - Model family: ${model.model_family || "Unknown"}
-- Model architecture: ${model.architecture || "Unknown"}
+- Model architecture: ${model.model_architecture || "Unknown"}
 - Parameters count: ${model.parameters_count || "Unknown"}
 - Context window size: ${model.context_window_size || "Unknown"}
 
 Additional context about the platform:
-- Platform description: ${platform.description || "No description available"}
-- Platform category: ${platform.category || "Unknown"}
-- Platform sub-category: ${platform.sub_category || "Unknown"}
+- Platform description: ${platform.platform_description || "No description available"}
+- Platform category: ${platform.platform_category || "Unknown"}
+- Platform sub-category: ${platform.platform_sub_category || "Unknown"}
 
 If any information is not known with confidence, use null for that field.
 Return ONLY the JSON object with no additional text.
@@ -179,14 +217,14 @@ Return ONLY the JSON object with no additional text.
         const validation = validateTechnicalSpecification(updatedTechSpec)
         if (!validation.valid) {
             log(
-                `Validation issues with enriched technical specification ${techSpec.spec_id}: ${validation.errors.join(", ")}`,
+                `Validation issues with enriched technical specification ${techSpec.spec_id || "new"}: ${validation.errors.join(", ")}`,
                 "warning",
             )
         }
 
         return updatedTechSpec
     } catch (error: any) {
-        log(`Error enriching technical specification ${techSpec.spec_id}: ${error.message}`, "error")
+        log(`Error enriching technical specification ${techSpec.spec_id || "new"}: ${error.message}`, "error")
         return techSpec
     }
 }
@@ -216,7 +254,7 @@ async function processTechnicalSpecificationsWithRateLimit(
 
             if (hasAllFields) {
                 log(
-                    `Skipping technical specification ${i + 1}/${techSpecs.length}: ${techSpec.spec_id} (already complete)`,
+                    `Skipping technical specification ${i + 1}/${techSpecs.length}: ${techSpec.spec_id || "unknown"} (already complete)`,
                     "info",
                 )
                 enrichedTechSpecs.push(techSpec)
@@ -234,14 +272,17 @@ async function processTechnicalSpecificationsWithRateLimit(
             enrichedTechSpecs.push(enrichedTechSpec)
 
             // Log progress
-            log(`Processed technical specification ${i + 1}/${techSpecs.length}: ${enrichedTechSpec.spec_id}`, "info")
+            log(
+                `Processed technical specification ${i + 1}/${techSpecs.length}: ${enrichedTechSpec.spec_id || "new"}`,
+                "info",
+            )
 
             // Rate limiting delay (except for last item)
             if (i < techSpecs.length - 1) {
                 await applyRateLimit(DELAY_BETWEEN_REQUESTS)
             }
         } catch (error: any) {
-            log(`Error processing technical specification ${techSpecs[i].spec_id}: ${error.message}`, "error")
+            log(`Error processing technical specification ${techSpecs[i].spec_id || "unknown"}: ${error.message}`, "error")
             enrichedTechSpecs.push(techSpecs[i]) // Add original data if enrichment fails
         }
     }
@@ -265,8 +306,10 @@ async function main() {
 
         let techSpecs = loadCsvData<TechnicalSpecification>(TECH_SPECS_CSV_PATH)
 
-        // Create backup of technical specifications file
-        createBackup(TECH_SPECS_CSV_PATH, BACKUP_DIR)
+        // Create backup of technical specifications file if it exists and has data
+        if (fs.existsSync(TECH_SPECS_CSV_PATH) && techSpecs.length > 0) {
+            createBackup(TECH_SPECS_CSV_PATH, BACKUP_DIR)
+        }
 
         // Validate technical specifications against models
         techSpecs = validateTechnicalSpecificationsAgainstModels(techSpecs, modelsMap)

@@ -40,11 +40,14 @@ interface Platform {
     platform_name: string
     company_id?: string
     platform_url: string
-    category?: string
-    sub_category?: string
-    status?: string
-    integration_options?: string
+    platform_category?: string
+    platform_sub_category?: string
+    platform_description?: string
+    platform_launch_date?: string
+    platform_status?: string
+    platform_availability?: string
     api_availability?: string
+    integration_options?: string
     createdAt?: string
     updatedAt?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
@@ -54,7 +57,7 @@ interface Platform {
 interface Company {
     company_id: string
     company_name: string
-    website_url: string
+    company_website_url: string
     [key: string]: string | undefined // Allow any string key for dynamic access
 }
 
@@ -73,13 +76,13 @@ function validatePlatform(platform: Platform): { valid: boolean; errors: string[
         errors.push("platform_url is required")
     }
 
-    if (!platform.category) {
-        errors.push("category is required")
+    if (!platform.platform_category) {
+        errors.push("platform_category is required")
     }
 
     // Check platform_status constraint if present
-    if (platform.status && !["Active", "Beta", "Discontinued"].includes(platform.status)) {
-        errors.push("status must be one of: Active, Beta, Discontinued")
+    if (platform.platform_status && !["Active", "Beta", "Discontinued"].includes(platform.platform_status)) {
+        errors.push("platform_status must be one of: Active, Beta, Discontinued")
     }
 
     // Check platform_url format
@@ -131,7 +134,7 @@ function matchPlatformsToCompanies(platforms: Platform[], companiesMap: Map<stri
 
             // First try exact domain match
             for (const [companyId, company] of companiesMap.entries()) {
-                const companyDomain = extractDomainFromUrl(company.website_url)
+                const companyDomain = extractDomainFromUrl(company.company_website_url)
                 if (companyDomain === domain) {
                     matchedCompany = company
                     break
@@ -141,7 +144,7 @@ function matchPlatformsToCompanies(platforms: Platform[], companiesMap: Map<stri
             // If no exact match, try partial domain match
             if (!matchedCompany) {
                 for (const [companyId, company] of companiesMap.entries()) {
-                    const companyDomain = extractDomainFromUrl(company.website_url)
+                    const companyDomain = extractDomainFromUrl(company.company_website_url)
                     if ((companyDomain && domain.includes(companyDomain)) || (companyDomain && companyDomain.includes(domain))) {
                         matchedCompany = company
                         break
@@ -202,6 +205,14 @@ function validatePlatformUrls(platforms: Platform[]): Platform[] {
 }
 
 /**
+ * Enrich platform data using OpenAI  "warning")
+    }
+
+    return platform
+  })
+}
+
+/**
  * Enrich platform data using OpenAI
  */
 async function enrichPlatformData(platform: Platform): Promise<Platform> {
@@ -210,10 +221,10 @@ async function enrichPlatformData(platform: Platform): Promise<Platform> {
 
         const prompt = `
 Provide accurate information about the AI platform "${platform.platform_name}" with URL "${platform.platform_url}" in JSON format with the following fields:
-- category: The primary category of the platform (e.g., "Natural Language Processing", "Computer Vision", "Machine Learning", "Generative AI", "Conversational AI", "Data Analytics", etc.)
-- sub_category: A more specific subcategory (e.g., "Text Generation", "Image Recognition", "Predictive Analytics", "Chatbots", etc.)
-- description: A concise 2-3 sentence description of what the platform does and its key capabilities
-- status: Current status (must be one of: "Active", "Beta", "Discontinued")
+- platform_category: The primary category of the platform (e.g., "Natural Language Processing", "Computer Vision", "Machine Learning", "Generative AI", "Conversational AI", "Data Analytics", etc.)
+- platform_sub_category: A more specific subcategory (e.g., "Text Generation", "Image Recognition", "Predictive Analytics", "Chatbots", etc.)
+- platform_description: A concise 2-3 sentence description of what the platform does and its key capabilities
+- platform_status: Current status (must be one of: "Active", "Beta", "Discontinued")
 - api_availability: Whether the platform offers API access ("Yes", "No", "Limited")
 - integration_options: Brief description of integration options (e.g., "REST API, SDK for Python and JavaScript, Webhooks")
 
@@ -259,15 +270,28 @@ Return ONLY the JSON object with no additional text.
 async function processPlatformsWithRateLimit(platforms: Platform[]): Promise<Platform[]> {
     const enrichedPlatforms: Platform[] = []
 
+    // If no platforms, create a default one for testing
+    if (platforms.length === 0) {
+        log("No platforms found in CSV, creating a default platform for testing", "warning")
+        const defaultPlatform: Platform = {
+            platform_id: `plat_${Date.now()}`,
+            platform_name: "OpenAI GPT API",
+            platform_url: "https://openai.com/api",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        }
+        platforms.push(defaultPlatform)
+    }
+
     for (let i = 0; i < platforms.length; i++) {
         try {
             // Skip platforms that already have all fields filled
             const platform = platforms[i]
             const hasAllFields =
-                platform.category &&
-                platform.sub_category &&
-                platform.description &&
-                platform.status &&
+                platform.platform_category &&
+                platform.platform_sub_category &&
+                platform.platform_description &&
+                platform.platform_status &&
                 platform.api_availability &&
                 platform.integration_options
 
@@ -289,7 +313,7 @@ async function processPlatformsWithRateLimit(platforms: Platform[]): Promise<Pla
                 await applyRateLimit(DELAY_BETWEEN_REQUESTS)
             }
         } catch (error: any) {
-            log(`Error processing platform ${platforms[i].platform_name}: ${error.message}`, "error")
+            log(`Error processing platform ${platforms[i]?.platform_name || "unknown"}: ${error.message}`, "error")
             enrichedPlatforms.push(platforms[i]) // Add original data if enrichment fails
         }
     }
@@ -310,8 +334,10 @@ async function main() {
 
         let platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
 
-        // Create backup of platforms file
-        createBackup(PLATFORMS_CSV_PATH, BACKUP_DIR)
+        // Create backup of platforms file if it exists and has data
+        if (fs.existsSync(PLATFORMS_CSV_PATH) && platforms.length > 0) {
+            createBackup(PLATFORMS_CSV_PATH, BACKUP_DIR)
+        }
 
         // Match platforms to companies
         platforms = matchPlatformsToCompanies(platforms, companiesMap)

@@ -1,1 +1,1 @@
-﻿ethics_id_primary_key,model_id_foreign_key,ethical_guidelines_url,bias_evaluation,fairness_metrics,transparency_score,environmental_impact
+ethics_id,model_id,ethical_guidelines_url,bias_evaluation,fairness_metrics,transparency_score,environmental_impact,createdAt,updatedAt

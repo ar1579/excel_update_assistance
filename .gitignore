@@ -1,5 +1,4 @@
-# Create .gitignore file
-echo "# Node.js dependencies
+# Node.js dependencies
 node_modules/
 
 # Environment variables
@@ -10,8 +9,16 @@ node_modules/
 logs/
 *.log
 
+# Data files
+data/*.csv
+
+# But keep documentation
+!data/README.md
+!data/schema-overview.md
+
 # Backup files
 *_backup_*.csv
+backups/
 
 # OS files
 .DS_Store
@@ -23,4 +30,5 @@ build/
 
 # IDE files
 .vscode/
-.idea/" > .gitignore
+.idea/
+

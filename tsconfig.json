@@ -8,12 +8,20 @@
         "outDir": "dist",
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
-        "resolveJsonModule": true
+        "resolveJsonModule": true,
+        "baseUrl": ".",
+        "paths": {
+            "@/*": [
+                "./*"
+            ]
+        }
     },
     "include": [
-        "*.ts"
+        "scripts/**/*.ts",
+        "utils/**/*.ts"
     ],
     "exclude": [
-        "node_modules"
+        "node_modules",
+        "dist"
     ]
 }

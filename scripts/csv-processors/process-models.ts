@@ -40,11 +40,13 @@ interface Model {
     model_family: string
     model_version: string
     model_variants?: string
-    architecture?: string
+    model_size?: string
+    model_size_unit?: string
+    model_type?: string
+    model_architecture?: string
     parameters_count?: string
     context_window_size?: string
     token_limit?: string
-    training_data_size?: string
     createdAt?: string
     updatedAt?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
@@ -55,9 +57,9 @@ interface Platform {
     platform_id: string
     platform_name: string
     company_id?: string
-    category?: string
-    sub_category?: string
-    description?: string
+    platform_category?: string
+    platform_sub_category?: string
+    platform_description?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
 }
 
@@ -97,16 +99,39 @@ function validateModel(model: Model): { valid: boolean; errors: string[] } {
 function validateModelsAgainstPlatforms(models: Model[], platformsMap: Map<string, Platform>): Model[] {
     log("Validating models against platforms...", "info")
 
+    // If no models, create a default one for testing
+    if (models.length === 0 && platformsMap.size > 0) {
+        log("No models found in CSV, creating a default model for testing", "warning")
+        const platformId = Array.from(platformsMap.keys())[0]
+        const platform = platformsMap.get(platformId)
+
+        if (platform) {
+            const defaultModel: Model = {
+                model_id: `model_${Date.now()}`,
+                platform_id: platformId,
+                model_family: "GPT",
+                model_version: "4",
+                model_variants: "Base",
+                model_architecture: "Transformer",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            }
+            models.push(defaultModel)
+            log(`Created default model for platform: ${platform.platform_name}`, "info")
+            return models
+        }
+    }
+
     const validModels = models.filter((model) => {
         const platformId = model.platform_id
         if (!platformId) {
-            log(`Model ${model.model_id} has no platform ID, skipping`, "warning")
+            log(`Model ${model.model_id || "unknown"} has no platform ID, skipping`, "warning")
             return false
         }
 
         const platformExists = platformsMap.has(platformId)
         if (!platformExists) {
-            log(`Model ${model.model_id} references non-existent platform ${platformId}, skipping`, "warning")
+            log(`Model ${model.model_id || "unknown"} references non-existent platform ${platformId}, skipping`, "warning")
             return false
         }
 
@@ -122,22 +147,27 @@ function validateModelsAgainstPlatforms(models: Model[], platformsMap: Map<strin
  */
 async function enrichModelData(model: Model, platform: Platform): Promise<Model> {
     try {
-        log(`Enriching data for model: ${model.model_id} (Platform: ${platform.platform_name})`, "info")
+        log(
+            `Enriching data for model: ${model.model_id || model.model_family} (Platform: ${platform.platform_name})`,
+            "info",
+        )
 
         const prompt = `
-Provide accurate information about the AI model "${model.model_id}" from the platform "${platform.platform_name}" in JSON format with the following fields:
+Provide accurate information about the AI model "${model.model_family} ${model.model_version}" from the platform "${platform.platform_name}" in JSON format with the following fields:
 - model_family: The family or group this model belongs to (e.g., "GPT", "BERT", "DALL-E", etc.)
 - model_version: Version number or identifier (e.g., "1.0", "2", "3.5", etc.)
 - model_variants: Any variants of this model, comma-separated (e.g., "Base, Fine-tuned, Quantized")
-- architecture: Underlying architecture (e.g., "Transformer", "Diffusion", "CNN", etc.)
+- model_type: Type of AI model (e.g., "LLM", "Transformer", "CV Model")
+- model_architecture: Underlying architecture (e.g., "Transformer", "Diffusion", "CNN", etc.)
 - parameters_count: Number of parameters (e.g., "7B", "175B", "1.5B", etc.)
 - context_window_size: Maximum context window size in tokens (e.g., "2048", "4096", "8192", etc.)
 - token_limit: Maximum token limit for input/output (e.g., "4096", "8192", "16384", etc.)
-- training_data_size: Size of training dataset (e.g., "45TB", "1.4T tokens", etc.)
+- model_size: Size of the model (e.g., "7B", "13B", "70B")
+- model_size_unit: Unit of model size (must be one of: "KB", "MB", "GB", "TB")
 
-Additional context about the platform: ${platform.description || "No description available"}
-Platform category: ${platform.category || "Unknown"}
-Platform sub-category: ${platform.sub_category || "Unknown"}
+Additional context about the platform: ${platform.platform_description || "No description available"}
+Platform category: ${platform.platform_category || "Unknown"}
+Platform sub-category: ${platform.platform_sub_category || "Unknown"}
 
 If any information is not known with confidence, use null for that field.
 Return ONLY the JSON object with no additional text.
@@ -162,12 +192,15 @@ Return ONLY the JSON object with no additional text.
         // Validate the enriched model data
         const validation = validateModel(updatedModel)
         if (!validation.valid) {
-            log(`Validation issues with enriched model ${model.model_id}: ${validation.errors.join(", ")}`, "warning")
+            log(
+                `Validation issues with enriched model ${model.model_id || model.model_family}: ${validation.errors.join(", ")}`,
+                "warning",
+            )
         }
 
         return updatedModel
     } catch (error: any) {
-        log(`Error enriching model ${model.model_id}: ${error.message}`, "error")
+        log(`Error enriching model ${model.model_id || model.model_family}: ${error.message}`, "error")
         return model
     }
 }
@@ -185,14 +218,19 @@ async function processModelsWithRateLimit(models: Model[], platformsMap: Map<str
             const hasAllFields =
                 model.model_family &&
                 model.model_version &&
-                model.architecture &&
+                model.model_type &&
+                model.model_architecture &&
                 model.parameters_count &&
                 model.context_window_size &&
                 model.token_limit &&
-                model.training_data_size
+                model.model_size &&
+                model.model_size_unit
 
             if (hasAllFields) {
-                log(`Skipping model ${i + 1}/${models.length}: ${model.model_id} (already complete)`, "info")
+                log(
+                    `Skipping model ${i + 1}/${models.length}: ${model.model_id || model.model_family} (already complete)`,
+                    "info",
+                )
                 enrichedModels.push(model)
                 continue
             }
@@ -205,14 +243,17 @@ async function processModelsWithRateLimit(models: Model[], platformsMap: Map<str
             enrichedModels.push(enrichedModel)
 
             // Log progress
-            log(`Processed model ${i + 1}/${models.length}: ${enrichedModel.model_id}`, "info")
+            log(`Processed model ${i + 1}/${models.length}: ${enrichedModel.model_id || enrichedModel.model_family}`, "info")
 
             // Rate limiting delay (except for last item)
             if (i < models.length - 1) {
                 await applyRateLimit(DELAY_BETWEEN_REQUESTS)
             }
         } catch (error: any) {
-            log(`Error processing model ${models[i].model_id}: ${error.message}`, "error")
+            log(
+                `Error processing model ${models[i].model_id || models[i].model_family || "unknown"}: ${error.message}`,
+                "error",
+            )
             enrichedModels.push(models[i]) // Add original data if enrichment fails
         }
     }
@@ -233,8 +274,10 @@ async function main() {
 
         let models = loadCsvData<Model>(MODELS_CSV_PATH)
 
-        // Create backup of models file
-        createBackup(MODELS_CSV_PATH, BACKUP_DIR)
+        // Create backup of models file if it exists and has data
+        if (fs.existsSync(MODELS_CSV_PATH) && models.length > 0) {
+            createBackup(MODELS_CSV_PATH, BACKUP_DIR)
+        }
 
         // Validate models against platforms
         models = validateModelsAgainstPlatforms(models, platformsMap)

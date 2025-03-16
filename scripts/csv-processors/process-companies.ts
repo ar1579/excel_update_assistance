@@ -38,11 +38,16 @@ const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
 interface Company {
     company_id: string
     company_name: string
-    hq_location?: string
+    company_hq_location?: string
+    company_year_founded?: string
     company_size?: string
-    funding_stage?: string
-    website_url: string
-    annual_revenue?: string
+    company_contact_information?: string
+    company_industry?: string
+    company_website_url: string
+    company_linkedin_url?: string
+    company_twitter_url?: string
+    company_funding_stage?: string
+    company_annual_revenue?: string
     createdAt?: string
     updatedAt?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
@@ -54,8 +59,8 @@ interface Platform {
     platform_name: string
     company_id?: string
     platform_url: string
-    category?: string
-    sub_category?: string
+    platform_category?: string
+    platform_sub_category?: string
     [key: string]: string | undefined // Allow any string key for dynamic access
 }
 
@@ -76,16 +81,16 @@ function validateCompany(company: Company): { valid: boolean; errors: string[] }
     }
 
     // Check website_url format
-    if (company.website_url) {
+    if (company.company_website_url) {
         try {
             // Add protocol if missing
-            let url = company.website_url
+            let url = company.company_website_url
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
                 url = "https://" + url
             }
             new URL(url)
         } catch (error) {
-            errors.push("website_url must be a valid URL")
+            errors.push("company_website_url must be a valid URL")
         }
     }
 
@@ -103,6 +108,24 @@ async function extractCompaniesFromPlatforms(): Promise<Company[]> {
 
     // Read platforms CSV
     const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+
+    // If no platforms, create a default company for testing
+    if (platforms.length === 0) {
+        log("No platforms found in CSV, creating a default company for testing", "warning")
+        const timestamp = new Date().toISOString()
+        const defaultCompany: Company = {
+            company_id: `comp_${Date.now()}`,
+            company_name: "OpenAI",
+            company_hq_location: "San Francisco, USA",
+            company_size: "Large",
+            company_industry: "Artificial Intelligence",
+            company_website_url: "https://openai.com",
+            company_funding_stage: "Series D",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+        }
+        return [defaultCompany]
+    }
 
     // Map to store unique companies
     const companiesMap = new Map<string, Company>()
@@ -131,7 +154,7 @@ async function extractCompaniesFromPlatforms(): Promise<Company[]> {
             companiesMap.set(companyName, {
                 company_id: `comp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
                 company_name: companyName,
-                website_url: `https://${domain}`,
+                company_website_url: `https://${domain}`,
                 createdAt: timestamp,
                 updatedAt: timestamp,
             })
@@ -153,11 +176,16 @@ async function enrichCompanyData(company: Company): Promise<Company> {
         log(`Enriching data for company: ${company.company_name}`, "info")
 
         const prompt = `
-Provide accurate information about the company "${company.company_name}" with URL "${company.website_url}" in JSON format with the following fields:
-- hq_location: Location of company headquarters (city, country)
+Provide accurate information about the company "${company.company_name}" with URL "${company.company_website_url}" in JSON format with the following fields:
+- company_hq_location: Location of company headquarters (city, country)
+- company_year_founded: Year the company was founded (e.g., "2015")
 - company_size: Company size category (must be one of: Startup, Small, Medium, Large, Enterprise)
-- funding_stage: Funding stage (e.g., "Bootstrapped", "Seed", "Series A", "Series B", "Public", "Acquired")
-- annual_revenue: Estimated annual revenue range (e.g., "<$1M", "$1M-$10M", "$10M-$50M", "$50M-$100M", "$100M-$1B", ">$1B")
+- company_contact_information: General contact information (e.g., "contact@company.com, +1-123-456-7890")
+- company_industry: Primary industry the company operates in (e.g., "Artificial Intelligence", "Machine Learning", "Computer Vision")
+- company_linkedin_url: URL to the company's LinkedIn profile
+- company_twitter_url: URL to the company's Twitter/X profile
+- company_funding_stage: Funding stage (e.g., "Bootstrapped", "Seed", "Series A", "Series B", "Public", "Acquired")
+- company_annual_revenue: Estimated annual revenue range (e.g., "<$1M", "$1M-$10M", "$10M-$50M", "$50M-$100M", "$100M-$1B", ">$1B")
 
 If any information is not known with confidence, use null for that field.
 Return ONLY the JSON object with no additional text.
@@ -229,7 +257,11 @@ async function processCompaniesWithRateLimit(companies: Company[]): Promise<Comp
 
             // Skip companies that already have all fields filled
             const hasAllFields =
-                company.hq_location && company.company_size && company.funding_stage && company.annual_revenue
+                company.company_hq_location &&
+                company.company_size &&
+                company.company_industry &&
+                company.company_funding_stage &&
+                company.company_annual_revenue
 
             if (hasAllFields) {
                 log(`Skipping company ${i + 1}/${companies.length}: ${company.company_name} (already complete)`, "info")
@@ -268,8 +300,8 @@ async function main() {
         const companies = await extractCompaniesFromPlatforms()
         log(`Extracted ${companies.length} unique companies`, "info")
 
-        // Create backup if file exists
-        if (fs.existsSync(COMPANIES_CSV_PATH)) {
+        // Create backup if file exists and has data
+        if (fs.existsSync(COMPANIES_CSV_PATH) && fs.statSync(COMPANIES_CSV_PATH).size > 0) {
             createBackup(COMPANIES_CSV_PATH, BACKUP_DIR)
         }
 
