@@ -10,16 +10,22 @@ Stores information about companies that develop AI platforms
 Fields:
 - company_id (Primary Key)
 - company_name
-- hq_location
+- company_hq_location
+- company_year_founded
 - company_size
-- funding_stage
-- website_url
-- annual_revenue
+- company_contact_information
+- company_industry
+- company_website_url
+- company_linkedin_url
+- company_twitter_url
+- company_funding_stage
+- company_annual_revenue
 - createdAt
 - updatedAt
 Constraints:
 - NOT NULL: company_name
 - UNIQUE: company_name
+- CHECK: company_size IN ('Startup', 'Small', 'Medium', 'Large', 'Enterprise')
 
 ---
 
@@ -30,17 +36,21 @@ Fields:
 - platform_id (Primary Key)
 - company_id (Foreign Key)
 - platform_name
-- category
-- sub_category
 - platform_url
-- status
-- integration_options
+- platform_category
+- platform_sub_category
+- platform_description
+- platform_launch_date
+- platform_status
+- platform_availability
 - api_availability
+- integration_options
 - createdAt
 - updatedAt
 Constraints:
-- NOT NULL: platform_name, category
+- NOT NULL: platform_name, platform_category
 - UNIQUE: platform_name
+- CHECK: platform_status IN ('Active', 'Beta', 'Discontinued')
 
 ---
 
@@ -53,16 +63,19 @@ Fields:
 - model_family
 - model_version
 - model_variants
-- architecture
+- model_size
+- model_size_unit
+- model_type
+- model_architecture
 - parameters_count
 - context_window_size
 - token_limit
-- training_data_size
 - createdAt
 - updatedAt
 Constraints:
 - NOT NULL: model_family, model_version
-- UNIQUE: model_family, model_version
+- UNIQUE: model_family, model_version, platform_id
+- CHECK: model_size_unit IN ('KB', 'MB', 'GB', 'TB')
 
 ---
 
@@ -78,7 +91,12 @@ Fields:
 - hardware_requirements
 - gpu_acceleration
 - latency
+- inference_time
+- training_time
 - compatible_frameworks
+- minimum_requirements
+- optimal_requirements
+- dependency_information
 - createdAt
 - updatedAt
 Constraints:
@@ -102,7 +120,7 @@ Fields:
 - createdAt
 - updatedAt
 Constraints:
-- CHECK: pricing_model IN ('Subscription', 'One-Time', 'Usage-Based')
+- CHECK: pricing_model IN ('Subscription', 'One-Time', 'Usage-Based', 'Free')
 
 ---
 
@@ -129,11 +147,11 @@ Stores licensing information, including open-source status
 Fields:
 - license_id (Primary Key)
 - platform_id (Foreign Key)
-- license_name
 - license_type
 - open_source_status
+- license_name
 - license_url
-- expiration_date
+- license_expiration_date
 - createdAt
 - updatedAt
 Constraints:
@@ -148,6 +166,7 @@ Fields:
 - performance_id (Primary Key)
 - model_id (Foreign Key)
 - performance_metrics
+- performance_score
 - accuracy_metrics
 - precision_metrics
 - recall_metrics
@@ -181,6 +200,8 @@ Tracks training dataset sizes and methodology
 Fields:
 - training_id (Primary Key)
 - model_id (Foreign Key)
+- training_data_size
+- training_data_notes
 - training_methodology
 - fine_tuning_supported
 - transfer_learning_supported
@@ -203,6 +224,7 @@ Fields:
 - specialized_domains
 - supported_tasks
 - limitations
+- typical_use_cases
 - createdAt
 - updatedAt
 Constraints:
@@ -239,7 +261,11 @@ Fields:
 - hipaa_compliance
 - iso_certifications
 - data_retention_policies
+- data_processing_location
 - privacy_features
+- security_incidents_history
+- audit_capabilities
+- access_control_features
 - createdAt
 - updatedAt
 Constraints:
@@ -260,6 +286,7 @@ Fields:
 - enterprise_support
 - training_options
 - consulting_services
+- implementation_support
 - response_time_guarantees
 - createdAt
 - updatedAt
@@ -272,12 +299,15 @@ Tracks documentation resources and learning materials
 Fields:
 - doc_id (Primary Key)
 - platform_id (Foreign Key)
+- documentation_description
+- doc_quality
 - documentation_url
 - faq_url
 - forum_url
 - example_code_available
 - example_code_languages
 - video_tutorials_available
+- learning_curve_rating
 - createdAt
 - updatedAt
 
@@ -297,6 +327,7 @@ Fields:
 - changelog_url
 - version_numbering_scheme
 - backward_compatibility_notes
+- known_issues
 - createdAt
 - updatedAt
 
@@ -309,7 +340,8 @@ Fields:
 - community_id (Primary Key)
 - platform_id (Foreign Key)
 - community_size
-- engagement_score
+- community_engagement_score
+- user_rating
 - github_repository
 - stackoverflow_tags
 - academic_papers
@@ -361,7 +393,7 @@ Fields:
 - user_count
 - adoption_rate
 - industry_penetration
-- customer_profile
+- typical_customer_profile
 - success_stories
 - direct_competitors
 - competitive_advantages

@@ -1,1 +1,1 @@
-community_id,platform_id,community_size,engagement_score,github_repository,stackoverflow_tags,academic_papers,case_studies,createdAt,updatedAt
+community_id,platform_id,community_size,community_engagement_score,user_rating,github_repository,stackoverflow_tags,academic_papers,case_studies,createdAt,updatedAt

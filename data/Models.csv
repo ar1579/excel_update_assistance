@@ -1,1 +1,2 @@
-model_id,platform_id,model_family,model_version,model_variants,architecture,parameters_count,context_window_size,token_limit,training_data_size,createdAt,updatedAt
+model_id,platform_id,model_family,model_version,model_variants,model_architecture,parameters_count,context_window_size,createdAt,updatedAt
+model_1,plat_1,GPT,4,"Base, Vision",Transformer,1.76T,8192,2025-03-21T04:28:43.855Z,2025-03-21T04:28:43.855Z

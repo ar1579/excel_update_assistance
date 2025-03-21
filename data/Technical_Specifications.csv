@@ -1,1 +1,2 @@
-spec_id,model_id,input_types,output_types,supported_languages,hardware_requirements,gpu_acceleration,latency,compatible_frameworks,createdAt,updatedAt
+spec_id,model_id,input_types,output_types,supported_languages,hardware_requirements,gpu_acceleration,compatible_frameworks,createdAt,updatedAt
+spec_1,model_1,"Text, Images",Text,"English, Spanish, French, German, and many others",GPU recommended for inference,Yes,OpenAI API,2025-03-21T04:28:43.855Z,2025-03-21T04:28:43.855Z
