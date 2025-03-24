@@ -1,2 +1,2 @@
-spec_id,model_id,input_types,output_types,supported_languages,hardware_requirements,gpu_acceleration,compatible_frameworks,createdAt,updatedAt
-spec_1,model_1,"Text, Images",Text,"English, Spanish, French, German, and many others",GPU recommended for inference,Yes,OpenAI API,2025-03-21T04:28:43.855Z,2025-03-21T04:28:43.855Z
+spec_id,model_id,input_types,output_types,supported_languages,hardware_requirements,gpu_acceleration,compatible_frameworks,createdAt,updatedAt,latency,inference_time,training_time,minimum_requirements,optimal_requirements,dependency_information
+spec_1,model_1,"Text, Images",Text,"English, Spanish, French, German, and many others",GPU recommended for inference,Yes,OpenAI API,2025-03-21T04:28:43.855Z,2025-03-22T21:20:06.473Z,50-100ms,100ms per token,,"16GB RAM, NVIDIA GPU","64GB RAM, NVIDIA A100","CUDA 11.7+, Python 3.8+"

@@ -2,154 +2,127 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
-import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
 import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
+import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Feature {
+  feature_id: string
+  platform_id: string
+  notable_features?: string
+  explainability_features?: string
+  customization_options?: string
+  bias_mitigation_approaches?: string
+  createdAt?: string
+  updatedAt?: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  platform_url: string
+  platform_category?: string
+  platform_sub_category?: string
+  platform_description?: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const FEATURES_CSV_PATH = path.join(DATA_DIR, "Features.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
-const PLATFORM_FEATURES_CSV_PATH = path.join(DATA_DIR, "platform_features.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Feature data structure
-interface Feature {
-    feature_id: string
-    platform_id: string
-    notable_features: string
-    explainability_features?: string
-    customization_options?: string
-    bias_mitigation_approaches?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_url: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform-Feature join table structure
-interface PlatformFeature {
-    platform_id: string
-    feature_id: string
-    createdAt?: string
-    updatedAt?: string
-}
-
-/**
- * Validate feature data against schema constraints
- */
+// ---- Validation ----
 function validateFeature(feature: Feature): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!feature.platform_id) {
-        errors.push("platform_id is required")
-    }
+  if (!feature.feature_id) errors.push("feature_id is required")
+  if (!feature.platform_id) errors.push("platform_id is required")
 
-    if (!feature.notable_features) {
-        errors.push("notable_features is required")
-    }
-
-    return {
-        valid: errors.length === 0,
-        errors,
-    }
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate features against platforms
- */
-function validateFeaturesAgainstPlatforms(features: Feature[], platformsMap: Map<string, Platform>): Feature[] {
-    log("Validating features against platforms...", "info")
+// ---- Validate features against platforms ----
+function validateFeaturesAgainstPlatforms(featureRecords: Feature[], platformsMap: Map<string, Platform>): Feature[] {
+  log("Validating features against platforms...", "info")
 
-    // If no features, create default ones for testing
-    if (features.length === 0 && platformsMap.size > 0) {
-        log("No features found in CSV, creating default features for testing", "warning")
-        const newFeatures: Feature[] = []
+  // If no feature records, create default ones for testing
+  if (featureRecords.length === 0 && platformsMap.size > 0) {
+    log("No feature records found in CSV, creating default features for testing", "warning")
+    const newFeatureRecords: Feature[] = []
 
-        // Create a default feature for each platform
-        for (const [platformId, platform] of platformsMap.entries()) {
-            const defaultFeature: Feature = {
-                feature_id: `feat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                platform_id: platformId,
-                notable_features: "Basic AI capabilities",
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newFeatures.push(defaultFeature)
-            log(`Created default feature for platform: ${platform.platform_name}`, "info")
-        }
-
-        return newFeatures
+    // Create a default feature record for each platform
+    for (const [platformId, platform] of platformsMap.entries()) {
+      const defaultFeature: Feature = {
+        feature_id: `feat_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        platform_id: platformId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      newFeatureRecords.push(defaultFeature)
+      log(`Created default feature for platform: ${platform.platform_name}`, "info")
     }
 
-    const validFeatures = features.filter((feature) => {
-        const platformId = feature.platform_id
-        if (!platformId) {
-            log(`Feature ${feature.feature_id || "unknown"} has no platform ID, skipping`, "warning")
-            return false
-        }
+    return newFeatureRecords
+  }
 
-        const platformExists = platformsMap.has(platformId)
-        if (!platformExists) {
-            log(
-                `Feature ${feature.feature_id || "unknown"} references non-existent platform ${platformId}, skipping`,
-                "warning",
-            )
-            return false
-        }
+  const validFeatureRecords = featureRecords.filter((feature) => {
+    const platformId = feature.platform_id
+    if (!platformId) {
+      log(`Feature ${feature.feature_id || "unknown"} has no platform ID, skipping`, "warning")
+      return false
+    }
 
-        return true
-    })
+    const platformExists = platformsMap.has(platformId)
+    if (!platformExists) {
+      log(
+        `Feature ${feature.feature_id || "unknown"} references non-existent platform ${platformId}, skipping`,
+        "warning",
+      )
+      return false
+    }
 
-    log(`Validated ${validFeatures.length}/${features.length} features`, "info")
-    return validFeatures
+    return true
+  })
+
+  log(`Validated ${validFeatureRecords.length}/${featureRecords.length} feature records`, "info")
+  return validFeatureRecords
 }
 
-/**
- * Enrich feature data using OpenAI
- */
-async function enrichFeatureData(feature: Feature, platform: Platform): Promise<Feature> {
-    try {
-        log(`Enriching feature data for platform: ${platform.platform_name}`, "info")
+// ---- Completeness ----
+function isComplete(feature: Feature): boolean {
+  return !!(
+    feature.notable_features &&
+    feature.explainability_features &&
+    feature.customization_options &&
+    feature.bias_mitigation_approaches
+  )
+}
 
-        const prompt = `
-Provide accurate feature information for the AI platform "${platform.platform_name}" in JSON format with the following fields:
-- notable_features: Key features of the platform (e.g., "Real-time translation, Voice recognition, Sentiment analysis")
-- explainability_features: Features related to AI explainability (e.g., "Attention visualization, Feature importance, Decision explanations")
-- customization_options: Available customization options (e.g., "Fine-tuning, Custom models, Parameter adjustments")
-- bias_mitigation_approaches: Approaches to mitigate bias (e.g., "Diverse training data, Bias detection tools, Fairness metrics")
+// ---- Enrichment via OpenAI ----
+async function enrichFeature(feature: Feature, platform: Platform): Promise<Feature> {
+  try {
+    log(`Enriching features for platform: ${platform.platform_name}`, "info")
+
+    const prompt = `
+Provide accurate information about the features of the AI platform "${platform.platform_name}" in JSON format with the following fields:
+- notable_features: A list of the most notable features of the platform (e.g., "Real-time translation, Voice recognition, Sentiment analysis")
+- explainability_features: Features related to AI explainability and transparency (e.g., "Attention visualization, Feature importance, Decision trees")
+- customization_options: Available options for customizing the platform (e.g., "Fine-tuning, Custom models, API customization")
+- bias_mitigation_approaches: Approaches used to mitigate bias in AI models (e.g., "Fairness metrics, Bias detection tools, Diverse training data")
 
 Additional context about the platform:
 Platform URL: ${platform.platform_url || "Not available"}
@@ -159,173 +132,98 @@ Platform description: ${platform.platform_description || "No description availab
 
 If any information is not known with confidence, use null for that field.
 Return ONLY the JSON object with no additional text.
-`
+        `
+    const enriched = await makeOpenAIRequest<Partial<Feature>>(openai, prompt)
 
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Feature>>(openai, prompt)
+    // Update timestamp
+    const timestamp = new Date().toISOString()
 
-        // Update timestamp
-        const timestamp = new Date().toISOString()
+    // Merge with existing feature data, only updating null/undefined fields
+    const enrichedFeature: Feature = { ...feature }
+    Object.keys(enriched).forEach((key) => {
+      if (enrichedFeature[key] === undefined || enrichedFeature[key] === null || enrichedFeature[key] === "") {
+        enrichedFeature[key] = enriched[key as keyof Partial<Feature>]
+      }
+    })
 
-        // Merge with existing feature data, only updating null/undefined fields
-        const updatedFeature: Feature = { ...feature }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedFeature[key] === undefined || updatedFeature[key] === null || updatedFeature[key] === "") {
-                updatedFeature[key] = enrichedData[key as keyof Partial<Feature>]
-            }
-        })
+    enrichedFeature.updatedAt = timestamp
 
-        updatedFeature.updatedAt = timestamp
-
-        // Validate the enriched feature data
-        const validation = validateFeature(updatedFeature)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched feature for ${platform.platform_name}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedFeature
-    } catch (error: any) {
-        log(`Error enriching feature for ${platform.platform_name}: ${error.message}`, "error")
-        return feature
-    }
-}
-
-/**
- * Process all features with rate limiting
- */
-async function processFeaturesWithRateLimit(
-    features: Feature[],
-    platformsMap: Map<string, Platform>,
-): Promise<Feature[]> {
-    const enrichedFeatures: Feature[] = []
-
-    for (let i = 0; i < features.length; i++) {
-        try {
-            // Skip features that already have all fields filled
-            const feature = features[i]
-            const hasAllFields =
-                feature.notable_features &&
-                feature.explainability_features &&
-                feature.customization_options &&
-                feature.bias_mitigation_approaches
-
-            if (hasAllFields) {
-                log(
-                    `Skipping feature ${i + 1}/${features.length}: ${feature.feature_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedFeatures.push(feature)
-                continue
-            }
-
-            // Get associated platform
-            const platform = platformsMap.get(feature.platform_id) as Platform
-
-            // Enrich feature data
-            const enrichedFeature = await enrichFeatureData(feature, platform)
-            enrichedFeatures.push(enrichedFeature)
-
-            // Log progress
-            log(`Processed feature ${i + 1}/${features.length} for platform: ${platform.platform_name}`, "info")
-
-            // Rate limiting delay (except for last item)
-            if (i < features.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing feature ${features[i].feature_id || "unknown"}: ${error.message}`, "error")
-            enrichedFeatures.push(features[i]) // Add original data if enrichment fails
-        }
+    const validation = validateFeature(enrichedFeature)
+    if (!validation.valid) {
+      log(`Validation failed for feature ${feature.feature_id}: ${validation.errors.join(", ")}`, "warning")
     }
 
-    return enrichedFeatures
+    return enrichedFeature
+  } catch (error: any) {
+    log(`Failed to enrich features for ${platform.platform_name}: ${error.message}`, "error")
+    return feature
+  }
 }
 
-/**
- * Update the platform_features join table
- */
-function updatePlatformFeaturesJoinTable(features: Feature[]): void {
-    try {
-        log("Updating platform_features join table...", "info")
+// ---- Processing ----
+async function processFeatures(featureRecords: Feature[], platformsMap: Map<string, Platform>): Promise<Feature[]> {
+  const processed: Feature[] = []
 
-        // Load existing join table data
-        let platformFeatures: PlatformFeature[] = []
-        if (fs.existsSync(PLATFORM_FEATURES_CSV_PATH)) {
-            platformFeatures = loadCsvData<PlatformFeature>(PLATFORM_FEATURES_CSV_PATH)
-        }
+  for (let i = 0; i < featureRecords.length; i++) {
+    const feature = featureRecords[i]
+    const platform = platformsMap.get(feature.platform_id)
 
-        // Create a map of existing relationships
-        const existingRelationships = new Set<string>()
-        platformFeatures.forEach((relation) => {
-            existingRelationships.add(`${relation.platform_id}-${relation.feature_id}`)
-        })
-
-        // Add new relationships
-        const timestamp = new Date().toISOString()
-        let newRelationsCount = 0
-
-        features.forEach((feature) => {
-            const relationKey = `${feature.platform_id}-${feature.feature_id}`
-            if (!existingRelationships.has(relationKey)) {
-                platformFeatures.push({
-                    platform_id: feature.platform_id,
-                    feature_id: feature.feature_id,
-                    createdAt: timestamp,
-                    updatedAt: timestamp,
-                })
-                existingRelationships.add(relationKey)
-                newRelationsCount++
-            }
-        })
-
-        // Save updated join table
-        saveCsvData(PLATFORM_FEATURES_CSV_PATH, platformFeatures)
-        log(`Updated platform_features join table with ${newRelationsCount} new relationships`, "info")
-    } catch (error: any) {
-        log(`Error updating platform_features join table: ${error.message}`, "error")
+    if (!platform) {
+      log(`Platform not found for feature with platform_id: ${feature.platform_id}`, "error")
+      processed.push(feature)
+      continue
     }
+
+    if (isComplete(feature)) {
+      log(`Skipping feature ${i + 1}/${featureRecords.length}: ${feature.feature_id} (already complete)`, "info")
+      processed.push(feature)
+      continue
+    }
+
+    const enriched = await enrichFeature(feature, platform)
+    processed.push(enriched)
+
+    log(`Processed feature ${i + 1}/${featureRecords.length} for platform: ${platform.platform_name}`, "info")
+
+    if (i < featureRecords.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
 }
 
-/**
- * Main function
- */
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting features processing...", "info")
+  try {
+    log("Starting features processor...", "info")
 
-        // Load platforms and features
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
+    // Load platforms and features
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    const platformsMap = createLookupMap(platforms, "platform_id")
 
-        let features = loadCsvData<Feature>(FEATURES_CSV_PATH)
+    let featureRecords = loadCsvData<Feature>(FEATURES_CSV_PATH)
 
-        // Create backup of features file if it exists and has data
-        if (fs.existsSync(FEATURES_CSV_PATH) && features.length > 0) {
-            createBackup(FEATURES_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate features against platforms
-        features = validateFeaturesAgainstPlatforms(features, platformsMap)
-
-        // Enrich feature data
-        features = await processFeaturesWithRateLimit(features, platformsMap)
-
-        // Save to CSV
-        saveCsvData(FEATURES_CSV_PATH, features)
-
-        // Update the platform_features join table
-        updatePlatformFeaturesJoinTable(features)
-
-        log("Features processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Create backup of features file if it exists and has data
+    if (fs.existsSync(FEATURES_CSV_PATH) && fs.statSync(FEATURES_CSV_PATH).size > 0) {
+      createBackup(FEATURES_CSV_PATH, BACKUP_DIR)
     }
+
+    // Validate features against platforms
+    featureRecords = validateFeaturesAgainstPlatforms(featureRecords, platformsMap)
+
+    // Process and enrich feature data
+    featureRecords = await processFeatures(featureRecords, platformsMap)
+
+    // Save to CSV
+    saveCsvData(FEATURES_CSV_PATH, featureRecords)
+
+    log("Features processing completed successfully ✅", "success")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

@@ -2,143 +2,130 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
-import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
 import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
+import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Pricing {
+  pricing_id: string
+  platform_id: string
+  pricing_model?: string
+  starting_price?: string
+  enterprise_pricing?: string
+  billing_frequency?: string
+  custom_pricing_available?: string
+  pricing_url?: string
+  discount_options?: string
+  createdAt?: string
+  updatedAt?: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  platform_url: string
+  platform_category?: string
+  platform_sub_category?: string
+  platform_description?: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const PRICING_CSV_PATH = path.join(DATA_DIR, "Pricing.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Pricing data structure
-interface Pricing {
-    pricing_id: string
-    platform_id: string
-    pricing_model?: string
-    starting_price?: string
-    enterprise_pricing?: string
-    billing_frequency?: string
-    custom_pricing_available?: string
-    pricing_url?: string
-    discount_options?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_url: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-/**
- * Validate pricing data against schema constraints
- */
+// ---- Validation ----
 function validatePricing(pricing: Pricing): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!pricing.platform_id) {
-        errors.push("platform_id is required")
-    }
+  if (!pricing.pricing_id) errors.push("pricing_id is required")
+  if (!pricing.platform_id) errors.push("platform_id is required")
 
-    // Check pricing_model constraint if present
-    if (pricing.pricing_model && !["Subscription", "One-Time", "Usage-Based", "Free"].includes(pricing.pricing_model)) {
-        errors.push("pricing_model must be one of: Subscription, One-Time, Usage-Based, Free")
-    }
+  // Check pricing_model constraint if present
+  if (pricing.pricing_model && !["Subscription", "One-Time", "Usage-Based", "Free"].includes(pricing.pricing_model)) {
+    errors.push("pricing_model must be one of: Subscription, One-Time, Usage-Based, Free")
+  }
 
-    return {
-        valid: errors.length === 0,
-        errors,
-    }
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate pricing against platforms
- */
+// ---- Validate pricing against platforms ----
 function validatePricingAgainstPlatforms(pricingRecords: Pricing[], platformsMap: Map<string, Platform>): Pricing[] {
-    log("Validating pricing against platforms...", "info")
+  log("Validating pricing against platforms...", "info")
 
-    // If no pricing records, create default ones for testing
-    if (pricingRecords.length === 0 && platformsMap.size > 0) {
-        log("No pricing records found in CSV, creating default pricing for testing", "warning")
-        const newPricingRecords: Pricing[] = []
+  // If no pricing records, create default ones for testing
+  if (pricingRecords.length === 0 && platformsMap.size > 0) {
+    log("No pricing records found in CSV, creating default pricing for testing", "warning")
+    const newPricingRecords: Pricing[] = []
 
-        // Create a default pricing record for each platform
-        for (const [platformId, platform] of platformsMap.entries()) {
-            const defaultPricing: Pricing = {
-                pricing_id: `price_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                platform_id: platformId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newPricingRecords.push(defaultPricing)
-            log(`Created default pricing for platform: ${platform.platform_name}`, "info")
-        }
-
-        return newPricingRecords
+    // Create a default pricing record for each platform
+    for (const [platformId, platform] of platformsMap.entries()) {
+      const defaultPricing: Pricing = {
+        pricing_id: `price_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        platform_id: platformId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      newPricingRecords.push(defaultPricing)
+      log(`Created default pricing for platform: ${platform.platform_name}`, "info")
     }
 
-    const validPricingRecords = pricingRecords.filter((pricing) => {
-        const platformId = pricing.platform_id
-        if (!platformId) {
-            log(`Pricing ${pricing.pricing_id || "unknown"} has no platform ID, skipping`, "warning")
-            return false
-        }
+    return newPricingRecords
+  }
 
-        const platformExists = platformsMap.has(platformId)
-        if (!platformExists) {
-            log(
-                `Pricing ${pricing.pricing_id || "unknown"} references non-existent platform ${platformId}, skipping`,
-                "warning",
-            )
-            return false
-        }
+  const validPricingRecords = pricingRecords.filter((pricing) => {
+    const platformId = pricing.platform_id
+    if (!platformId) {
+      log(`Pricing ${pricing.pricing_id || "unknown"} has no platform ID, skipping`, "warning")
+      return false
+    }
 
-        return true
-    })
+    const platformExists = platformsMap.has(platformId)
+    if (!platformExists) {
+      log(
+        `Pricing ${pricing.pricing_id || "unknown"} references non-existent platform ${platformId}, skipping`,
+        "warning",
+      )
+      return false
+    }
 
-    log(`Validated ${validPricingRecords.length}/${pricingRecords.length} pricing records`, "info")
-    return validPricingRecords
+    return true
+  })
+
+  log(`Validated ${validPricingRecords.length}/${pricingRecords.length} pricing records`, "info")
+  return validPricingRecords
 }
 
-/**
- * Enrich pricing data using OpenAI
- */
-async function enrichPricingData(pricing: Pricing, platform: Platform): Promise<Pricing> {
-    try {
-        log(`Enriching pricing data for platform: ${platform.platform_name}`, "info")
+// ---- Completeness ----
+function isComplete(pricing: Pricing): boolean {
+  return !!(
+    pricing.pricing_model &&
+    pricing.starting_price &&
+    pricing.billing_frequency &&
+    pricing.custom_pricing_available
+  )
+}
 
-        const prompt = `
+// ---- Enrichment via OpenAI ----
+async function enrichPricing(pricing: Pricing, platform: Platform): Promise<Pricing> {
+  try {
+    log(`Enriching pricing for platform: ${platform.platform_name}`, "info")
+
+    const prompt = `
 Provide accurate pricing information about the AI platform "${platform.platform_name}" in JSON format with the following fields:
 - pricing_model: The pricing model used (must be one of: "Subscription", "One-Time", "Usage-Based", "Free")
 - starting_price: The starting price or lowest tier price (e.g., "$10/month", "Free", "$0.0001 per token")
@@ -155,122 +142,98 @@ Platform description: ${platform.platform_description || "No description availab
 
 If any information is not known with confidence, use null for that field.
 Return ONLY the JSON object with no additional text.
-`
+        `
+    const enriched = await makeOpenAIRequest<Partial<Pricing>>(openai, prompt)
 
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Pricing>>(openai, prompt)
+    // Update timestamp
+    const timestamp = new Date().toISOString()
 
-        // Update timestamp
-        const timestamp = new Date().toISOString()
+    // Merge with existing pricing data, only updating null/undefined fields
+    const enrichedPricing: Pricing = { ...pricing }
+    Object.keys(enriched).forEach((key) => {
+      if (enrichedPricing[key] === undefined || enrichedPricing[key] === null || enrichedPricing[key] === "") {
+        enrichedPricing[key] = enriched[key as keyof Partial<Pricing>]
+      }
+    })
 
-        // Merge with existing pricing data, only updating null/undefined fields
-        const updatedPricing: Pricing = { ...pricing }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedPricing[key] === undefined || updatedPricing[key] === null || updatedPricing[key] === "") {
-                updatedPricing[key] = enrichedData[key as keyof Partial<Pricing>]
-            }
-        })
+    enrichedPricing.updatedAt = timestamp
 
-        updatedPricing.updatedAt = timestamp
-
-        // Validate the enriched pricing data
-        const validation = validatePricing(updatedPricing)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched pricing for ${platform.platform_name}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedPricing
-    } catch (error: any) {
-        log(`Error enriching pricing for ${platform.platform_name}: ${error.message}`, "error")
-        return pricing
-    }
-}
-
-/**
- * Process all pricing records with rate limiting
- */
-async function processPricingWithRateLimit(
-    pricingRecords: Pricing[],
-    platformsMap: Map<string, Platform>,
-): Promise<Pricing[]> {
-    const enrichedPricingRecords: Pricing[] = []
-
-    for (let i = 0; i < pricingRecords.length; i++) {
-        try {
-            // Skip pricing records that already have all fields filled
-            const pricing = pricingRecords[i]
-            const hasAllFields =
-                pricing.pricing_model && pricing.starting_price && pricing.billing_frequency && pricing.custom_pricing_available
-
-            if (hasAllFields) {
-                log(
-                    `Skipping pricing ${i + 1}/${pricingRecords.length}: ${pricing.pricing_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedPricingRecords.push(pricing)
-                continue
-            }
-
-            // Get associated platform
-            const platform = platformsMap.get(pricing.platform_id) as Platform
-
-            // Enrich pricing data
-            const enrichedPricing = await enrichPricingData(pricing, platform)
-            enrichedPricingRecords.push(enrichedPricing)
-
-            // Log progress
-            log(`Processed pricing ${i + 1}/${pricingRecords.length} for platform: ${platform.platform_name}`, "info")
-
-            // Rate limiting delay (except for last item)
-            if (i < pricingRecords.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing pricing ${pricingRecords[i].pricing_id || "unknown"}: ${error.message}`, "error")
-            enrichedPricingRecords.push(pricingRecords[i]) // Add original data if enrichment fails
-        }
+    const validation = validatePricing(enrichedPricing)
+    if (!validation.valid) {
+      log(`Validation failed for pricing ${pricing.pricing_id}: ${validation.errors.join(", ")}`, "warning")
     }
 
-    return enrichedPricingRecords
+    return enrichedPricing
+  } catch (error: any) {
+    log(`Failed to enrich pricing for ${platform.platform_name}: ${error.message}`, "error")
+    return pricing
+  }
 }
 
-/**
- * Main function
- */
+// ---- Processing ----
+async function processPricing(pricingRecords: Pricing[], platformsMap: Map<string, Platform>): Promise<Pricing[]> {
+  const processed: Pricing[] = []
+
+  for (let i = 0; i < pricingRecords.length; i++) {
+    const pricing = pricingRecords[i]
+    const platform = platformsMap.get(pricing.platform_id)
+
+    if (!platform) {
+      log(`Platform not found for pricing with platform_id: ${pricing.platform_id}`, "error")
+      processed.push(pricing)
+      continue
+    }
+
+    if (isComplete(pricing)) {
+      log(`Skipping pricing ${i + 1}/${pricingRecords.length}: ${pricing.pricing_id} (already complete)`, "info")
+      processed.push(pricing)
+      continue
+    }
+
+    const enriched = await enrichPricing(pricing, platform)
+    processed.push(enriched)
+
+    log(`Processed pricing ${i + 1}/${pricingRecords.length} for platform: ${platform.platform_name}`, "info")
+
+    if (i < pricingRecords.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
+}
+
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting pricing processing...", "info")
+  try {
+    log("Starting pricing processor...", "info")
 
-        // Load platforms and pricing
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
+    // Load platforms and pricing
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    const platformsMap = createLookupMap(platforms, "platform_id")
 
-        let pricingRecords = loadCsvData<Pricing>(PRICING_CSV_PATH)
+    let pricingRecords = loadCsvData<Pricing>(PRICING_CSV_PATH)
 
-        // Create backup of pricing file if it exists and has data
-        if (fs.existsSync(PRICING_CSV_PATH) && pricingRecords.length > 0) {
-            createBackup(PRICING_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate pricing against platforms
-        pricingRecords = validatePricingAgainstPlatforms(pricingRecords, platformsMap)
-
-        // Enrich pricing data
-        pricingRecords = await processPricingWithRateLimit(pricingRecords, platformsMap)
-
-        // Save to CSV
-        saveCsvData(PRICING_CSV_PATH, pricingRecords)
-
-        log("Pricing processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Create backup of pricing file if it exists and has data
+    if (fs.existsSync(PRICING_CSV_PATH) && fs.statSync(PRICING_CSV_PATH).size > 0) {
+      createBackup(PRICING_CSV_PATH, BACKUP_DIR)
     }
+
+    // Validate pricing against platforms
+    pricingRecords = validatePricingAgainstPlatforms(pricingRecords, platformsMap)
+
+    // Process and enrich pricing data
+    pricingRecords = await processPricing(pricingRecords, platformsMap)
+
+    // Save to CSV
+    saveCsvData(PRICING_CSV_PATH, pricingRecords)
+
+    log("Pricing processing completed successfully ✅", "success")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

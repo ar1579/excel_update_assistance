@@ -2,39 +2,21 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
+import { createBackup, loadCsvData, saveCsvData } from "../../utils/file-utils"
 import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
-import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
+    log("Missing OpenAI API Key", "error")
     process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
-const TRAINING_CSV_PATH = path.join(DATA_DIR, "Training.csv")
-const MODELS_CSV_PATH = path.join(DATA_DIR, "Models.csv")
-const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
-
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Training data structure
+// ---- Define Types ----
 interface Training {
     training_id: string
     model_id: string
@@ -44,252 +26,194 @@ interface Training {
     fine_tuning_supported?: string
     transfer_learning_supported?: string
     fine_tuning_performance?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
+    createdAt: string
+    updatedAt: string
+    [key: string]: string | undefined
 }
 
-// Model data structure
 interface Model {
     model_id: string
+    model_family: string
+    model_version: string
     platform_id: string
-    model_family?: string
-    model_version?: string
     model_type?: string
-    model_architecture?: string
-    parameters_count?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
+    [key: string]: string | undefined
 }
 
-// Platform data structure
 interface Platform {
     platform_id: string
     platform_name: string
-    platform_category?: string
-    platform_sub_category?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
+    [key: string]: string | undefined
 }
 
-/**
- * Validate training data against schema constraints
- */
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
+const TRAINING_CSV_PATH = path.join(DATA_DIR, "Training.csv")
+const MODELS_CSV_PATH = path.join(DATA_DIR, "Models.csv")
+const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
+
+// ---- Validation ----
 function validateTraining(training: Training): { valid: boolean; errors: string[] } {
     const errors: string[] = []
 
-    // Check required fields
-    if (!training.model_id) {
-        errors.push("model_id is required")
+    if (!training.training_id) errors.push("training_id is required")
+    if (!training.model_id) errors.push("model_id is required")
+
+    // Boolean validations
+    if (training.fine_tuning_supported && !["Yes", "No", "Limited"].includes(training.fine_tuning_supported)) {
+        errors.push("fine_tuning_supported must be one of: Yes, No, Limited")
     }
 
-    return {
-        valid: errors.length === 0,
-        errors,
+    if (
+        training.transfer_learning_supported &&
+        !["Yes", "No", "Limited"].includes(training.transfer_learning_supported)
+    ) {
+        errors.push("transfer_learning_supported must be one of: Yes, No, Limited")
     }
+
+    return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate training records against models
- */
-function validateTrainingAgainstModels(trainingRecords: Training[], modelsMap: Map<string, Model>): Training[] {
-    log("Validating training records against models...", "info")
-
-    // If no training records, create default ones for testing
-    if (trainingRecords.length === 0 && modelsMap.size > 0) {
-        log("No training records found in CSV, creating default records for testing", "warning")
-        const newTrainingRecords: Training[] = []
-
-        // Create a default training record for each model
-        for (const [modelId, model] of modelsMap.entries()) {
-            const defaultTraining: Training = {
-                training_id: `train_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                model_id: modelId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newTrainingRecords.push(defaultTraining)
-            log(`Created default training record for model: ${model.model_family} ${model.model_version}`, "info")
-        }
-
-        return newTrainingRecords
-    }
-
-    const validTrainingRecords = trainingRecords.filter((training) => {
-        const modelId = training.model_id
-        if (!modelId) {
-            log(`Training ${training.training_id || "unknown"} has no model ID, skipping`, "warning")
-            return false
-        }
-
-        const modelExists = modelsMap.has(modelId)
-        if (!modelExists) {
-            log(`Training ${training.training_id || "unknown"} references non-existent model ${modelId}, skipping`, "warning")
-            return false
-        }
-
-        return true
-    })
-
-    log(`Validated ${validTrainingRecords.length}/${trainingRecords.length} training records`, "info")
-    return validTrainingRecords
+// ---- Completeness ----
+function isComplete(training: Training): boolean {
+    return (
+        !!training.training_data_size &&
+        !!training.training_methodology &&
+        !!training.fine_tuning_supported &&
+        !!training.transfer_learning_supported
+    )
 }
 
-/**
- * Enrich training data using OpenAI
- */
-async function enrichTrainingData(training: Training, model: Model, platform: Platform): Promise<Training> {
+// ---- Enrichment via OpenAI ----
+async function enrichTraining(training: Training, models: Model[], platforms: Platform[]): Promise<Training> {
     try {
-        log(`Enriching training data for model: ${model.model_family || ""} ${model.model_version || ""}`, "info")
+        log(`Enriching training data for: ${training.training_id}`, "info")
+
+        const model = models.find((m) => m.model_id === training.model_id)
+        if (!model) {
+            log(`Model not found for training_id: ${training.training_id}`, "warning")
+            return training
+        }
+
+        const platform = platforms.find((p) => p.platform_id === model.platform_id)
+        const platformName = platform ? platform.platform_name : "Unknown Platform"
+        const modelType = model.model_type || "LLM"
 
         const prompt = `
-Provide accurate training information for the AI model "${model.model_family || ""} ${model.model_version || ""}" from the platform "${platform.platform_name}" in JSON format with the following fields:
-- training_data_size: Size of the training dataset (e.g., "1.4T tokens", "570GB of text", "45B examples")
-- training_data_notes: Notes about the training data (e.g., "Trained on web data, books, and code", "Includes filtered web content and academic papers")
-- training_methodology: Methodology used for training (e.g., "Supervised fine-tuning followed by RLHF", "Self-supervised learning on diverse corpus")
-- fine_tuning_supported: Whether fine-tuning is supported ("Yes", "No", "Limited")
-- transfer_learning_supported: Whether transfer learning is supported ("Yes", "No", "Limited")
-- fine_tuning_performance: Information about fine-tuning performance (e.g., "Achieves 95% of base performance with 1000 examples", "Significant improvements on domain-specific tasks")
+Provide enriched training data for the AI model "${model.model_family} ${model.model_version}" from platform "${platformName}" in the following JSON format:
+{
+  "training_data_size": "Size of the training dataset (e.g., 1.5TB, 300B tokens)",
+  "training_data_notes": "Notes about the training data sources and composition",
+  "training_methodology": "Description of the training methodology used",
+  "fine_tuning_supported": "One of: Yes, No, Limited",
+  "transfer_learning_supported": "One of: Yes, No, Limited",
+  "fine_tuning_performance": "Description of fine-tuning performance and capabilities"
+}
 
-Additional context about the model:
-Model type: ${model.model_type || "Unknown"}
-Model architecture: ${model.model_architecture || "Unknown"}
-Parameters count: ${model.parameters_count || "Unknown"}
-Platform category: ${platform.platform_category || "Unknown"}
-Platform sub-category: ${platform.platform_sub_category || "Unknown"}
-
-If any information is not known with confidence, use null for that field.
-Return ONLY the JSON object with no additional text.
-`
-
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Training>>(openai, prompt)
-
-        // Update timestamp
-        const timestamp = new Date().toISOString()
-
-        // Merge with existing training data, only updating null/undefined fields
-        const updatedTraining: Training = { ...training }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedTraining[key] === undefined || updatedTraining[key] === null || updatedTraining[key] === "") {
-                updatedTraining[key] = enrichedData[key as keyof Partial<Training>]
-            }
-        })
-
-        updatedTraining.updatedAt = timestamp
-
-        // Validate the enriched training data
-        const validation = validateTraining(updatedTraining)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched training for ${model.model_family || ""} ${model.model_version || ""}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
+The model is of type "${modelType}". Return only the JSON object with realistic, accurate training information for this type of AI model.
+        `
+        const enriched = await makeOpenAIRequest<Partial<Training>>(openai, prompt)
+        const enrichedTraining: Training = {
+            ...training,
+            ...enriched,
+            updatedAt: new Date().toISOString(),
         }
 
-        return updatedTraining
+        const validation = validateTraining(enrichedTraining)
+        if (!validation.valid) {
+            log(`Validation failed for ${training.training_id}: ${validation.errors.join(", ")}`, "warning")
+        }
+
+        return enrichedTraining
     } catch (error: any) {
-        log(
-            `Error enriching training for ${model.model_family || ""} ${model.model_version || ""}: ${error.message}`,
-            "error",
-        )
+        log(`Failed to enrich training ${training.training_id}: ${error.message}`, "error")
         return training
     }
 }
 
-/**
- * Process all training records with rate limiting
- */
-async function processTrainingWithRateLimit(
-    trainingRecords: Training[],
-    modelsMap: Map<string, Model>,
-    platformsMap: Map<string, Platform>,
-): Promise<Training[]> {
-    const enrichedTrainingRecords: Training[] = []
+// ---- Processing ----
+async function processTrainings(trainings: Training[], models: Model[], platforms: Platform[]): Promise<Training[]> {
+    const processed: Training[] = []
 
-    for (let i = 0; i < trainingRecords.length; i++) {
-        try {
-            // Skip training records that already have all fields filled
-            const training = trainingRecords[i]
-            const hasAllFields =
-                training.training_data_size &&
-                training.training_methodology &&
-                training.fine_tuning_supported &&
-                training.transfer_learning_supported
+    for (let i = 0; i < trainings.length; i++) {
+        const training = trainings[i]
 
-            if (hasAllFields) {
-                log(
-                    `Skipping training ${i + 1}/${trainingRecords.length}: ${training.training_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedTrainingRecords.push(training)
-                continue
-            }
+        if (isComplete(training)) {
+            log(`Skipping ${training.training_id} (already complete)`, "info")
+            processed.push(training)
+            continue
+        }
 
-            // Get associated model
-            const model = modelsMap.get(training.model_id) as Model
+        const enriched = await enrichTraining(training, models, platforms)
+        processed.push(enriched)
 
-            // Get associated platform
-            const platform = platformsMap.get(model.platform_id) as Platform
-
-            // Enrich training data
-            const enrichedTraining = await enrichTrainingData(training, model, platform)
-            enrichedTrainingRecords.push(enrichedTraining)
-
-            // Log progress
-            log(
-                `Processed training ${i + 1}/${trainingRecords.length} for model: ${model.model_family || ""} ${model.model_version || ""}`,
-                "info",
-            )
-
-            // Rate limiting delay (except for last item)
-            if (i < trainingRecords.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing training ${trainingRecords[i].training_id || "unknown"}: ${error.message}`, "error")
-            enrichedTrainingRecords.push(trainingRecords[i]) // Add original data if enrichment fails
+        if (i < trainings.length - 1) {
+            await applyRateLimit(DELAY)
         }
     }
 
-    return enrichedTrainingRecords
+    return processed
 }
 
-/**
- * Main function
- */
+// ---- Main ----
 async function main() {
     try {
-        log("Starting training processing...", "info")
+        log("Starting training processor...", "info")
 
-        // Load models, platforms, and training records
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
-
+        // Load models data
+        if (!fs.existsSync(MODELS_CSV_PATH)) {
+            log("Models.csv not found. Please run process-models.ts first.", "error")
+            process.exit(1)
+        }
         const models = loadCsvData<Model>(MODELS_CSV_PATH)
-        const modelsMap = createLookupMap(models, "model_id")
+        log(`Loaded ${models.length} models`, "info")
 
-        let trainingRecords = loadCsvData<Training>(TRAINING_CSV_PATH)
+        // Load platforms data
+        if (!fs.existsSync(PLATFORMS_CSV_PATH)) {
+            log("Platforms.csv not found. Please run process-platforms.ts first.", "error")
+            process.exit(1)
+        }
+        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+        log(`Loaded ${platforms.length} platforms`, "info")
 
-        // Create backup of training file if it exists and has data
-        if (fs.existsSync(TRAINING_CSV_PATH) && trainingRecords.length > 0) {
+        // Load or initialize training data
+        const trainings = fs.existsSync(TRAINING_CSV_PATH) ? loadCsvData<Training>(TRAINING_CSV_PATH) : []
+
+        // Create training entries for models without one
+        const modelIds = new Set(trainings.map((t) => t.model_id))
+        const newTrainings: Training[] = []
+
+        for (const model of models) {
+            if (!modelIds.has(model.model_id)) {
+                const newTraining: Training = {
+                    training_id: `training_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                    model_id: model.model_id,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                }
+                newTrainings.push(newTraining)
+                log(`Created new training entry for model: ${model.model_family} ${model.model_version}`, "info")
+            }
+        }
+
+        const allTrainings = [...trainings, ...newTrainings]
+
+        // Create backup if file exists
+        if (fs.existsSync(TRAINING_CSV_PATH) && fs.statSync(TRAINING_CSV_PATH).size > 0) {
             createBackup(TRAINING_CSV_PATH, BACKUP_DIR)
         }
 
-        // Validate training records against models
-        trainingRecords = validateTrainingAgainstModels(trainingRecords, modelsMap)
+        // Process and enrich trainings
+        const enriched = await processTrainings(allTrainings, models, platforms)
+        saveCsvData(TRAINING_CSV_PATH, enriched)
 
-        // Enrich training data
-        trainingRecords = await processTrainingWithRateLimit(trainingRecords, modelsMap, platformsMap)
-
-        // Save to CSV
-        saveCsvData(TRAINING_CSV_PATH, trainingRecords)
-
-        log("Training processing completed successfully", "info")
+        log(`Training processor complete. Processed ${enriched.length} records ✅`, "info")
     } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
+        log(`Unhandled error: ${error.message}`, "error")
         process.exit(1)
     }
 }
 
-// Run the main function
 main()
 

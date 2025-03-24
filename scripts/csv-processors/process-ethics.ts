@@ -2,296 +2,215 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
+import { createBackup, loadCsvData, saveCsvData } from "../../utils/file-utils"
 import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
-import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Ethics {
+  ethics_id: string
+  model_id: string
+  ethical_guidelines_url?: string
+  bias_evaluation?: string
+  fairness_metrics?: string
+  transparency_score?: string
+  environmental_impact?: string
+  createdAt: string
+  updatedAt: string
+  [key: string]: string | undefined
+}
+
+interface Model {
+  model_id: string
+  model_family: string
+  model_version: string
+  platform_id: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const ETHICS_CSV_PATH = path.join(DATA_DIR, "Ethics.csv")
 const MODELS_CSV_PATH = path.join(DATA_DIR, "Models.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Ethics data structure
-interface Ethics {
-    ethics_id: string
-    model_id: string
-    ethical_guidelines_url?: string
-    bias_evaluation?: string
-    fairness_metrics?: string
-    transparency_score?: string
-    environmental_impact?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Model data structure
-interface Model {
-    model_id: string
-    platform_id: string
-    model_family?: string
-    model_version?: string
-    model_type?: string
-    model_architecture?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-/**
- * Validate ethics data against schema constraints
- */
+// ---- Validation ----
 function validateEthics(ethics: Ethics): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!ethics.model_id) {
-        errors.push("model_id is required")
-    }
+  if (!ethics.ethics_id) errors.push("ethics_id is required")
+  if (!ethics.model_id) errors.push("model_id is required")
 
-    return {
-        valid: errors.length === 0,
-        errors,
+  // URL validation
+  if (ethics.ethical_guidelines_url && !ethics.ethical_guidelines_url.startsWith("http")) {
+    errors.push("ethical_guidelines_url must be a valid URL")
+  }
+
+  // Numeric validations
+  if (ethics.transparency_score) {
+    const score = Number.parseFloat(ethics.transparency_score)
+    if (isNaN(score) || score < 0 || score > 100) {
+      errors.push("transparency_score must be a number between 0 and 100")
     }
+  }
+
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate ethics records against models
- */
-function validateEthicsAgainstModels(ethicsRecords: Ethics[], modelsMap: Map<string, Model>): Ethics[] {
-    log("Validating ethics records against models...", "info")
-
-    // If no ethics records, create default ones for testing
-    if (ethicsRecords.length === 0 && modelsMap.size > 0) {
-        log("No ethics records found in CSV, creating default records for testing", "warning")
-        const newEthicsRecords: Ethics[] = []
-
-        // Create a default ethics record for each model
-        for (const [modelId, model] of modelsMap.entries()) {
-            const defaultEthics: Ethics = {
-                ethics_id: `eth_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                model_id: modelId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newEthicsRecords.push(defaultEthics)
-            log(`Created default ethics record for model: ${model.model_family} ${model.model_version}`, "info")
-        }
-
-        return newEthicsRecords
-    }
-
-    const validEthicsRecords = ethicsRecords.filter((ethics) => {
-        const modelId = ethics.model_id
-        if (!modelId) {
-            log(`Ethics record ${ethics.ethics_id || "unknown"} has no model ID, skipping`, "warning")
-            return false
-        }
-
-        const modelExists = modelsMap.has(modelId)
-        if (!modelExists) {
-            log(
-                `Ethics record ${ethics.ethics_id || "unknown"} references non-existent model ${modelId}, skipping`,
-                "warning",
-            )
-            return false
-        }
-
-        return true
-    })
-
-    log(`Validated ${validEthicsRecords.length}/${ethicsRecords.length} ethics records`, "info")
-    return validEthicsRecords
+// ---- Completeness ----
+function isComplete(ethics: Ethics): boolean {
+  return (
+    !!ethics.bias_evaluation &&
+    !!ethics.fairness_metrics &&
+    !!ethics.transparency_score &&
+    !!ethics.environmental_impact
+  )
 }
 
-/**
- * Enrich ethics data using OpenAI
- */
-async function enrichEthicsData(ethics: Ethics, model: Model, platform: Platform): Promise<Ethics> {
-    try {
-        log(`Enriching ethics data for model: ${model.model_family || ""} ${model.model_version || ""}`, "info")
+// ---- Enrichment via OpenAI ----
+async function enrichEthics(ethics: Ethics, models: Model[], platforms: Platform[]): Promise<Ethics> {
+  try {
+    log(`Enriching ethics for: ${ethics.ethics_id}`, "info")
 
-        const prompt = `
-Provide accurate ethics information for the AI model "${model.model_family || ""} ${model.model_version || ""}" from the platform "${platform.platform_name}" in JSON format with the following fields:
-- ethical_guidelines_url: URL to ethical guidelines or principles
-- bias_evaluation: Information about bias evaluation (e.g., "Comprehensive bias testing conducted", "Limited bias evaluation")
-- fairness_metrics: Fairness metrics used (e.g., "Demographic parity, Equal opportunity, Equalized odds")
-- transparency_score: Score for transparency (e.g., "High", "Medium", "Low", or a numerical score like "8/10")
-- environmental_impact: Information about environmental impact (e.g., "Carbon footprint: 123 tons CO2e", "Energy-efficient training methods used")
-
-Additional context about the model:
-Model type: ${model.model_type || "Unknown"}
-Model architecture: ${model.model_architecture || "Unknown"}
-Platform category: ${platform.platform_category || "Unknown"}
-Platform sub-category: ${platform.platform_sub_category || "Unknown"}
-Platform description: ${platform.platform_description || "No description available"}
-
-If any information is not known with confidence, use null for that field.
-Return ONLY the JSON object with no additional text.
-`
-
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Ethics>>(openai, prompt)
-
-        // Update timestamp
-        const timestamp = new Date().toISOString()
-
-        // Merge with existing ethics data, only updating null/undefined fields
-        const updatedEthics: Ethics = { ...ethics }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedEthics[key] === undefined || updatedEthics[key] === null || updatedEthics[key] === "") {
-                updatedEthics[key] = enrichedData[key as keyof Partial<Ethics>]
-            }
-        })
-
-        updatedEthics.updatedAt = timestamp
-
-        // Validate the enriched ethics data
-        const validation = validateEthics(updatedEthics)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched ethics for ${model.model_family || ""} ${model.model_version || ""}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedEthics
-    } catch (error: any) {
-        log(
-            `Error enriching ethics for ${model.model_family || ""} ${model.model_version || ""}: ${error.message}`,
-            "error",
-        )
-        return ethics
-    }
-}
-
-/**
- * Process all ethics records with rate limiting
- */
-async function processEthicsWithRateLimit(
-    ethicsRecords: Ethics[],
-    modelsMap: Map<string, Model>,
-    platformsMap: Map<string, Platform>,
-): Promise<Ethics[]> {
-    const enrichedEthicsRecords: Ethics[] = []
-
-    for (let i = 0; i < ethicsRecords.length; i++) {
-        try {
-            // Skip ethics records that already have all fields filled
-            const ethics = ethicsRecords[i]
-            const hasAllFields =
-                ethics.ethical_guidelines_url &&
-                ethics.bias_evaluation &&
-                ethics.fairness_metrics &&
-                ethics.transparency_score &&
-                ethics.environmental_impact
-
-            if (hasAllFields) {
-                log(
-                    `Skipping ethics ${i + 1}/${ethicsRecords.length}: ${ethics.ethics_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedEthicsRecords.push(ethics)
-                continue
-            }
-
-            // Get associated model
-            const model = modelsMap.get(ethics.model_id) as Model
-
-            // Get associated platform
-            const platform = platformsMap.get(model.platform_id) as Platform
-
-            // Enrich ethics data
-            const enrichedEthics = await enrichEthicsData(ethics, model, platform)
-            enrichedEthicsRecords.push(enrichedEthics)
-
-            // Log progress
-            log(
-                `Processed ethics ${i + 1}/${ethicsRecords.length} for model: ${model.model_family || ""} ${model.model_version || ""}`,
-                "info",
-            )
-
-            // Rate limiting delay (except for last item)
-            if (i < ethicsRecords.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing ethics ${ethicsRecords[i].ethics_id || "unknown"}: ${error.message}`, "error")
-            enrichedEthicsRecords.push(ethicsRecords[i]) // Add original data if enrichment fails
-        }
+    const model = models.find((m) => m.model_id === ethics.model_id)
+    if (!model) {
+      log(`Model not found for ethics_id: ${ethics.ethics_id}`, "warning")
+      return ethics
     }
 
-    return enrichedEthicsRecords
+    const platform = platforms.find((p) => p.platform_id === model.platform_id)
+    const platformName = platform ? platform.platform_name : "Unknown Platform"
+
+    const prompt = `
+Provide enriched ethics data for the AI model "${model.model_family} ${model.model_version}" from platform "${platformName}" in the following JSON format:
+{
+  "ethical_guidelines_url": "URL to the model's ethical guidelines (if available)",
+  "bias_evaluation": "Assessment of known biases in the model",
+  "fairness_metrics": "Metrics used to evaluate fairness",
+  "transparency_score": "A score from 0-100 representing the model's transparency",
+  "environmental_impact": "Assessment of the model's environmental impact (e.g., carbon footprint)"
 }
 
-/**
- * Main function
- */
+Return only the JSON object with realistic, accurate ethics information for this AI model.
+        `
+    const enriched = await makeOpenAIRequest<Partial<Ethics>>(openai, prompt)
+    const enrichedEthics: Ethics = {
+      ...ethics,
+      ...enriched,
+      updatedAt: new Date().toISOString(),
+    }
+
+    const validation = validateEthics(enrichedEthics)
+    if (!validation.valid) {
+      log(`Validation failed for ${ethics.ethics_id}: ${validation.errors.join(", ")}`, "warning")
+    }
+
+    return enrichedEthics
+  } catch (error: any) {
+    log(`Failed to enrich ethics ${ethics.ethics_id}: ${error.message}`, "error")
+    return ethics
+  }
+}
+
+// ---- Processing ----
+async function processEthics(ethicsRecords: Ethics[], models: Model[], platforms: Platform[]): Promise<Ethics[]> {
+  const processed: Ethics[] = []
+
+  for (let i = 0; i < ethicsRecords.length; i++) {
+    const ethics = ethicsRecords[i]
+
+    if (isComplete(ethics)) {
+      log(`Skipping ${ethics.ethics_id} (already complete)`, "info")
+      processed.push(ethics)
+      continue
+    }
+
+    const enriched = await enrichEthics(ethics, models, platforms)
+    processed.push(enriched)
+
+    if (i < ethicsRecords.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
+}
+
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting ethics processing...", "info")
+  try {
+    log("Starting ethics processor...", "info")
 
-        // Load models, platforms, and ethics records
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
-
-        const models = loadCsvData<Model>(MODELS_CSV_PATH)
-        const modelsMap = createLookupMap(models, "model_id")
-
-        let ethicsRecords = loadCsvData<Ethics>(ETHICS_CSV_PATH)
-
-        // Create backup of ethics file if it exists and has data
-        if (fs.existsSync(ETHICS_CSV_PATH) && ethicsRecords.length > 0) {
-            createBackup(ETHICS_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate ethics records against models
-        ethicsRecords = validateEthicsAgainstModels(ethicsRecords, modelsMap)
-
-        // Enrich ethics data
-        ethicsRecords = await processEthicsWithRateLimit(ethicsRecords, modelsMap, platformsMap)
-
-        // Save to CSV
-        saveCsvData(ETHICS_CSV_PATH, ethicsRecords)
-
-        log("Ethics processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Load models data
+    if (!fs.existsSync(MODELS_CSV_PATH)) {
+      log("Models.csv not found. Please run process-models.ts first.", "error")
+      process.exit(1)
     }
+    const models = loadCsvData<Model>(MODELS_CSV_PATH)
+    log(`Loaded ${models.length} models`, "info")
+
+    // Load platforms data
+    if (!fs.existsSync(PLATFORMS_CSV_PATH)) {
+      log("Platforms.csv not found. Please run process-platforms.ts first.", "error")
+      process.exit(1)
+    }
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    log(`Loaded ${platforms.length} platforms`, "info")
+
+    // Load or initialize ethics data
+    const ethicsRecords = fs.existsSync(ETHICS_CSV_PATH) ? loadCsvData<Ethics>(ETHICS_CSV_PATH) : []
+
+    // Create ethics entries for models without one
+    const modelIds = new Set(ethicsRecords.map((e) => e.model_id))
+    const newEthicsRecords: Ethics[] = []
+
+    for (const model of models) {
+      if (!modelIds.has(model.model_id)) {
+        const newEthics: Ethics = {
+          ethics_id: `ethics_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          model_id: model.model_id,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        newEthicsRecords.push(newEthics)
+        log(`Created new ethics entry for model: ${model.model_family} ${model.model_version}`, "info")
+      }
+    }
+
+    const allEthicsRecords = [...ethicsRecords, ...newEthicsRecords]
+
+    // Create backup if file exists
+    if (fs.existsSync(ETHICS_CSV_PATH) && fs.statSync(ETHICS_CSV_PATH).size > 0) {
+      createBackup(ETHICS_CSV_PATH, BACKUP_DIR)
+    }
+
+    // Process and enrich ethics
+    const enriched = await processEthics(allEthicsRecords, models, platforms)
+    saveCsvData(ETHICS_CSV_PATH, enriched)
+
+    log(`Ethics processor complete. Processed ${enriched.length} records ✅`, "info")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

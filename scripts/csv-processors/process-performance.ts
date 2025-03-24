@@ -2,304 +2,250 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
+import { createBackup, loadCsvData, saveCsvData } from "../../utils/file-utils"
 import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
-import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Performance {
+  performance_id: string
+  model_id: string
+  performance_metrics?: string
+  performance_score?: string
+  accuracy_metrics?: string
+  precision_metrics?: string
+  recall_metrics?: string
+  f1_score?: string
+  createdAt: string
+  updatedAt: string
+  [key: string]: string | undefined
+}
+
+interface Model {
+  model_id: string
+  model_family: string
+  model_version: string
+  platform_id: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const PERFORMANCE_CSV_PATH = path.join(DATA_DIR, "Performance.csv")
 const MODELS_CSV_PATH = path.join(DATA_DIR, "Models.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Performance data structure
-interface Performance {
-    performance_id: string
-    model_id: string
-    performance_metrics?: string
-    performance_score?: string
-    accuracy_metrics?: string
-    precision_metrics?: string
-    recall_metrics?: string
-    f1_score?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Model data structure
-interface Model {
-    model_id: string
-    platform_id: string
-    model_family?: string
-    model_version?: string
-    model_type?: string
-    model_architecture?: string
-    parameters_count?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_category?: string
-    platform_sub_category?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-/**
- * Validate performance data against schema constraints
- */
+// ---- Validation ----
 function validatePerformance(performance: Performance): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!performance.model_id) {
-        errors.push("model_id is required")
-    }
+  if (!performance.performance_id) errors.push("performance_id is required")
+  if (!performance.model_id) errors.push("model_id is required")
 
-    return {
-        valid: errors.length === 0,
-        errors,
+  // Numeric validations
+  if (performance.performance_score) {
+    const score = Number.parseFloat(performance.performance_score)
+    if (isNaN(score) || score < 0 || score > 100) {
+      errors.push("performance_score must be a number between 0 and 100")
     }
+  }
+
+  if (performance.accuracy_metrics) {
+    const accuracy = Number.parseFloat(performance.accuracy_metrics)
+    if (isNaN(accuracy) || accuracy < 0 || accuracy > 1) {
+      errors.push("accuracy_metrics must be a number between 0 and 1")
+    }
+  }
+
+  if (performance.precision_metrics) {
+    const precision = Number.parseFloat(performance.precision_metrics)
+    if (isNaN(precision) || precision < 0 || precision > 1) {
+      errors.push("precision_metrics must be a number between 0 and 1")
+    }
+  }
+
+  if (performance.recall_metrics) {
+    const recall = Number.parseFloat(performance.recall_metrics)
+    if (isNaN(recall) || recall < 0 || recall > 1) {
+      errors.push("recall_metrics must be a number between 0 and 1")
+    }
+  }
+
+  if (performance.f1_score) {
+    const f1 = Number.parseFloat(performance.f1_score)
+    if (isNaN(f1) || f1 < 0 || f1 > 1) {
+      errors.push("f1_score must be a number between 0 and 1")
+    }
+  }
+
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate performance records against models
- */
-function validatePerformanceAgainstModels(
-    performanceRecords: Performance[],
-    modelsMap: Map<string, Model>,
-): Performance[] {
-    log("Validating performance records against models...", "info")
-
-    // If no performance records, create default ones for testing
-    if (performanceRecords.length === 0 && modelsMap.size > 0) {
-        log("No performance records found in CSV, creating default records for testing", "warning")
-        const newPerformanceRecords: Performance[] = []
-
-        // Create a default performance record for each model
-        for (const [modelId, model] of modelsMap.entries()) {
-            const defaultPerformance: Performance = {
-                performance_id: `perf_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                model_id: modelId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newPerformanceRecords.push(defaultPerformance)
-            log(`Created default performance record for model: ${model.model_family} ${model.model_version}`, "info")
-        }
-
-        return newPerformanceRecords
-    }
-
-    const validPerformanceRecords = performanceRecords.filter((performance) => {
-        const modelId = performance.model_id
-        if (!modelId) {
-            log(`Performance ${performance.performance_id || "unknown"} has no model ID, skipping`, "warning")
-            return false
-        }
-
-        const modelExists = modelsMap.has(modelId)
-        if (!modelExists) {
-            log(
-                `Performance ${performance.performance_id || "unknown"} references non-existent model ${modelId}, skipping`,
-                "warning",
-            )
-            return false
-        }
-
-        return true
-    })
-
-    log(`Validated ${validPerformanceRecords.length}/${performanceRecords.length} performance records`, "info")
-    return validPerformanceRecords
+// ---- Completeness ----
+function isComplete(performance: Performance): boolean {
+  return (
+    !!performance.performance_metrics &&
+    !!performance.performance_score &&
+    !!performance.accuracy_metrics &&
+    !!performance.precision_metrics &&
+    !!performance.recall_metrics &&
+    !!performance.f1_score
+  )
 }
 
-/**
- * Enrich performance data using OpenAI
- */
-async function enrichPerformanceData(performance: Performance, model: Model, platform: Platform): Promise<Performance> {
-    try {
-        log(`Enriching performance data for model: ${model.model_family || ""} ${model.model_version || ""}`, "info")
+// ---- Enrichment via OpenAI ----
+async function enrichPerformance(
+  performance: Performance,
+  models: Model[],
+  platforms: Platform[],
+): Promise<Performance> {
+  try {
+    log(`Enriching performance for: ${performance.performance_id}`, "info")
 
-        const prompt = `
-Provide accurate performance metrics for the AI model "${model.model_family || ""} ${model.model_version || ""}" from the platform "${platform.platform_name}" in JSON format with the following fields:
-- performance_metrics: General performance metrics (e.g., "MMLU: 86.4%, GSM8k: 92.0%")
-- performance_score: Overall performance score if available (e.g., "8.7/10", "92%")
-- accuracy_metrics: Accuracy measurements (e.g., "95% on classification tasks")
-- precision_metrics: Precision measurements (e.g., "0.92")
-- recall_metrics: Recall measurements (e.g., "0.89")
-- f1_score: F1 score if available (e.g., "0.905")
-
-Additional context about the model:
-Model type: ${model.model_type || "Unknown"}
-Model architecture: ${model.model_architecture || "Unknown"}
-Parameters count: ${model.parameters_count || "Unknown"}
-Platform category: ${platform.platform_category || "Unknown"}
-Platform sub-category: ${platform.platform_sub_category || "Unknown"}
-
-If any information is not known with confidence, use null for that field.
-Return ONLY the JSON object with no additional text.
-`
-
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Performance>>(openai, prompt)
-
-        // Update timestamp
-        const timestamp = new Date().toISOString()
-
-        // Merge with existing performance data, only updating null/undefined fields
-        const updatedPerformance: Performance = { ...performance }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedPerformance[key] === undefined || updatedPerformance[key] === null || updatedPerformance[key] === "") {
-                updatedPerformance[key] = enrichedData[key as keyof Partial<Performance>]
-            }
-        })
-
-        updatedPerformance.updatedAt = timestamp
-
-        // Validate the enriched performance data
-        const validation = validatePerformance(updatedPerformance)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched performance for ${model.model_family || ""} ${model.model_version || ""}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedPerformance
-    } catch (error: any) {
-        log(
-            `Error enriching performance for ${model.model_family || ""} ${model.model_version || ""}: ${error.message}`,
-            "error",
-        )
-        return performance
+    const model = models.find((m) => m.model_id === performance.model_id)
+    if (!model) {
+      log(`Model not found for performance_id: ${performance.performance_id}`, "warning")
+      return performance
     }
+
+    const platform = platforms.find((p) => p.platform_id === model.platform_id)
+    const platformName = platform ? platform.platform_name : "Unknown Platform"
+
+    const prompt = `
+Provide enriched performance data for the AI model "${model.model_family} ${model.model_version}" from platform "${platformName}" in the following JSON format:
+{
+  "performance_metrics": "Description of key performance metrics for this model",
+  "performance_score": "Overall performance score between 0-100",
+  "accuracy_metrics": "Accuracy score between 0-1",
+  "precision_metrics": "Precision score between 0-1",
+  "recall_metrics": "Recall score between 0-1",
+  "f1_score": "F1 score between 0-1"
 }
 
-/**
- * Process all performance records with rate limiting
- */
-async function processPerformanceWithRateLimit(
-    performanceRecords: Performance[],
-    modelsMap: Map<string, Model>,
-    platformsMap: Map<string, Platform>,
+Return only the JSON object with realistic, accurate performance metrics for this type of AI model.
+        `
+    const enriched = await makeOpenAIRequest<Partial<Performance>>(openai, prompt)
+    const enrichedPerformance: Performance = {
+      ...performance,
+      ...enriched,
+      updatedAt: new Date().toISOString(),
+    }
+
+    const validation = validatePerformance(enrichedPerformance)
+    if (!validation.valid) {
+      log(`Validation failed for ${performance.performance_id}: ${validation.errors.join(", ")}`, "warning")
+    }
+
+    return enrichedPerformance
+  } catch (error: any) {
+    log(`Failed to enrich performance ${performance.performance_id}: ${error.message}`, "error")
+    return performance
+  }
+}
+
+// ---- Processing ----
+async function processPerformances(
+  performances: Performance[],
+  models: Model[],
+  platforms: Platform[],
 ): Promise<Performance[]> {
-    const enrichedPerformanceRecords: Performance[] = []
+  const processed: Performance[] = []
 
-    for (let i = 0; i < performanceRecords.length; i++) {
-        try {
-            // Skip performance records that already have all fields filled
-            const performance = performanceRecords[i]
-            const hasAllFields =
-                performance.performance_metrics &&
-                performance.accuracy_metrics &&
-                performance.precision_metrics &&
-                performance.recall_metrics &&
-                performance.f1_score
+  for (let i = 0; i < performances.length; i++) {
+    const performance = performances[i]
 
-            if (hasAllFields) {
-                log(
-                    `Skipping performance ${i + 1}/${performanceRecords.length}: ${performance.performance_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedPerformanceRecords.push(performance)
-                continue
-            }
-
-            // Get associated model
-            const model = modelsMap.get(performance.model_id) as Model
-
-            // Get associated platform
-            const platform = platformsMap.get(model.platform_id) as Platform
-
-            // Enrich performance data
-            const enrichedPerformance = await enrichPerformanceData(performance, model, platform)
-            enrichedPerformanceRecords.push(enrichedPerformance)
-
-            // Log progress
-            log(
-                `Processed performance ${i + 1}/${performanceRecords.length} for model: ${model.model_family || ""} ${model.model_version || ""}`,
-                "info",
-            )
-
-            // Rate limiting delay (except for last item)
-            if (i < performanceRecords.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(
-                `Error processing performance ${performanceRecords[i].performance_id || "unknown"}: ${error.message}`,
-                "error",
-            )
-            enrichedPerformanceRecords.push(performanceRecords[i]) // Add original data if enrichment fails
-        }
+    if (isComplete(performance)) {
+      log(`Skipping ${performance.performance_id} (already complete)`, "info")
+      processed.push(performance)
+      continue
     }
 
-    return enrichedPerformanceRecords
+    const enriched = await enrichPerformance(performance, models, platforms)
+    processed.push(enriched)
+
+    if (i < performances.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
 }
 
-/**
- * Main function
- */
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting performance processing...", "info")
+  try {
+    log("Starting performance processor...", "info")
 
-        // Load models, platforms, and performance records
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
-
-        const models = loadCsvData<Model>(MODELS_CSV_PATH)
-        const modelsMap = createLookupMap(models, "model_id")
-
-        let performanceRecords = loadCsvData<Performance>(PERFORMANCE_CSV_PATH)
-
-        // Create backup of performance file if it exists and has data
-        if (fs.existsSync(PERFORMANCE_CSV_PATH) && performanceRecords.length > 0) {
-            createBackup(PERFORMANCE_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate performance records against models
-        performanceRecords = validatePerformanceAgainstModels(performanceRecords, modelsMap)
-
-        // Enrich performance data
-        performanceRecords = await processPerformanceWithRateLimit(performanceRecords, modelsMap, platformsMap)
-
-        // Save to CSV
-        saveCsvData(PERFORMANCE_CSV_PATH, performanceRecords)
-
-        log("Performance processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Load models data
+    if (!fs.existsSync(MODELS_CSV_PATH)) {
+      log("Models.csv not found. Please run process-models.ts first.", "error")
+      process.exit(1)
     }
+    const models = loadCsvData<Model>(MODELS_CSV_PATH)
+    log(`Loaded ${models.length} models`, "info")
+
+    // Load platforms data
+    if (!fs.existsSync(PLATFORMS_CSV_PATH)) {
+      log("Platforms.csv not found. Please run process-platforms.ts first.", "error")
+      process.exit(1)
+    }
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    log(`Loaded ${platforms.length} platforms`, "info")
+
+    // Load or initialize performance data
+    const performances = fs.existsSync(PERFORMANCE_CSV_PATH) ? loadCsvData<Performance>(PERFORMANCE_CSV_PATH) : []
+
+    // Create performance entries for models without one
+    const modelIds = new Set(performances.map((p) => p.model_id))
+    const newPerformances: Performance[] = []
+
+    for (const model of models) {
+      if (!modelIds.has(model.model_id)) {
+        const newPerformance: Performance = {
+          performance_id: `performance_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          model_id: model.model_id,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        newPerformances.push(newPerformance)
+        log(`Created new performance entry for model: ${model.model_family} ${model.model_version}`, "info")
+      }
+    }
+
+    const allPerformances = [...performances, ...newPerformances]
+
+    // Create backup if file exists
+    if (fs.existsSync(PERFORMANCE_CSV_PATH) && fs.statSync(PERFORMANCE_CSV_PATH).size > 0) {
+      createBackup(PERFORMANCE_CSV_PATH, BACKUP_DIR)
+    }
+
+    // Process and enrich performances
+    const enriched = await processPerformances(allPerformances, models, platforms)
+    saveCsvData(PERFORMANCE_CSV_PATH, enriched)
+
+    log(`Performance processor complete. Processed ${enriched.length} records ✅`, "info")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

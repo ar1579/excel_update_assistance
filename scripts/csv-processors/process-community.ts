@@ -2,278 +2,201 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
+import { createBackup, loadCsvData, saveCsvData } from "../../utils/file-utils"
 import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
-import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Community {
+  community_id: string
+  platform_id: string
+  community_size?: string
+  community_engagement_score?: string
+  user_rating?: string
+  github_repository?: string
+  stackoverflow_tags?: string
+  academic_papers?: string
+  case_studies?: string
+  createdAt: string
+  updatedAt: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const COMMUNITY_CSV_PATH = path.join(DATA_DIR, "Community.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Community data structure
-interface Community {
-    community_id: string
-    platform_id: string
-    community_size?: string
-    community_engagement_score?: string
-    user_rating?: string
-    github_repository?: string
-    stackoverflow_tags?: string
-    academic_papers?: string
-    case_studies?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_url: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-/**
- * Validate community data against schema constraints
- */
+// ---- Validation ----
 function validateCommunity(community: Community): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!community.platform_id) {
-        errors.push("platform_id is required")
-    }
+  if (!community.community_id) errors.push("community_id is required")
+  if (!community.platform_id) errors.push("platform_id is required")
 
-    return {
-        valid: errors.length === 0,
-        errors,
+  // Numeric validations
+  if (community.community_engagement_score) {
+    const score = Number.parseFloat(community.community_engagement_score)
+    if (isNaN(score) || score < 0 || score > 100) {
+      errors.push("community_engagement_score must be a number between 0 and 100")
     }
+  }
+
+  if (community.user_rating) {
+    const rating = Number.parseFloat(community.user_rating)
+    if (isNaN(rating) || rating < 0 || rating > 5) {
+      errors.push("user_rating must be a number between 0 and 5")
+    }
+  }
+
+  // URL validations
+  if (community.github_repository && !community.github_repository.includes("github.com")) {
+    errors.push("github_repository must be a valid GitHub URL")
+  }
+
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate community records against platforms
- */
-function validateCommunityAgainstPlatforms(
-    communityRecords: Community[],
-    platformsMap: Map<string, Platform>,
-): Community[] {
-    log("Validating community records against platforms...", "info")
-
-    // If no community records, create default ones for testing
-    if (communityRecords.length === 0 && platformsMap.size > 0) {
-        log("No community records found in CSV, creating default records for testing", "warning")
-        const newCommunityRecords: Community[] = []
-
-        // Create a default community record for each platform
-        for (const [platformId, platform] of platformsMap.entries()) {
-            const defaultCommunity: Community = {
-                community_id: `comm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                platform_id: platformId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newCommunityRecords.push(defaultCommunity)
-            log(`Created default community record for platform: ${platform.platform_name}`, "info")
-        }
-
-        return newCommunityRecords
-    }
-
-    const validCommunityRecords = communityRecords.filter((community) => {
-        const platformId = community.platform_id
-        if (!platformId) {
-            log(`Community record ${community.community_id || "unknown"} has no platform ID, skipping`, "warning")
-            return false
-        }
-
-        const platformExists = platformsMap.has(platformId)
-        if (!platformExists) {
-            log(
-                `Community record ${community.community_id || "unknown"} references non-existent platform ${platformId}, skipping`,
-                "warning",
-            )
-            return false
-        }
-
-        return true
-    })
-
-    log(`Validated ${validCommunityRecords.length}/${communityRecords.length} community records`, "info")
-    return validCommunityRecords
+// ---- Completeness ----
+function isComplete(community: Community): boolean {
+  return !!community.community_size && !!community.community_engagement_score && !!community.user_rating
 }
 
-/**
- * Enrich community data using OpenAI
- */
-async function enrichCommunityData(community: Community, platform: Platform): Promise<Community> {
-    try {
-        log(`Enriching community data for platform: ${platform.platform_name}`, "info")
+// ---- Enrichment via OpenAI ----
+async function enrichCommunity(community: Community, platforms: Platform[]): Promise<Community> {
+  try {
+    log(`Enriching community for: ${community.community_id}`, "info")
 
-        const prompt = `
-Provide accurate community information for the AI platform "${platform.platform_name}" in JSON format with the following fields:
-- community_size: Estimated size of the community (e.g., "Large (100k+)", "Medium (10k-100k)", "Small (<10k)")
-- community_engagement_score: Score for community engagement (e.g., "High", "Medium", "Low", or a numerical score like "8/10")
-- user_rating: Average user rating (e.g., "4.5/5", "8.7/10")
-- github_repository: GitHub repository URL if open source
-- stackoverflow_tags: StackOverflow tags related to the platform (e.g., "openai-gpt, chatgpt, openai-api")
-- academic_papers: Information about academic papers (e.g., "50+ papers citing the platform", "Key papers published in NeurIPS")
-- case_studies: Information about case studies (e.g., "Multiple case studies available on website", "Limited case studies")
-
-Additional context about the platform:
-Platform URL: ${platform.platform_url || "Not available"}
-Platform category: ${platform.platform_category || "Unknown"}
-Platform sub-category: ${platform.platform_sub_category || "Unknown"}
-Platform description: ${platform.platform_description || "No description available"}
-
-If any information is not known with confidence, use null for that field.
-Return ONLY the JSON object with no additional text.
-`
-
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Community>>(openai, prompt)
-
-        // Update timestamp
-        const timestamp = new Date().toISOString()
-
-        // Merge with existing community data, only updating null/undefined fields
-        const updatedCommunity: Community = { ...community }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedCommunity[key] === undefined || updatedCommunity[key] === null || updatedCommunity[key] === "") {
-                updatedCommunity[key] = enrichedData[key as keyof Partial<Community>]
-            }
-        })
-
-        updatedCommunity.updatedAt = timestamp
-
-        // Validate the enriched community data
-        const validation = validateCommunity(updatedCommunity)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched community for ${platform.platform_name}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedCommunity
-    } catch (error: any) {
-        log(`Error enriching community for ${platform.platform_name}: ${error.message}`, "error")
-        return community
-    }
-}
-
-/**
- * Process all community records with rate limiting
- */
-async function processCommunityWithRateLimit(
-    communityRecords: Community[],
-    platformsMap: Map<string, Platform>,
-): Promise<Community[]> {
-    const enrichedCommunityRecords: Community[] = []
-
-    for (let i = 0; i < communityRecords.length; i++) {
-        try {
-            // Skip community records that already have all fields filled
-            const community = communityRecords[i]
-            const hasAllFields =
-                community.community_size &&
-                community.community_engagement_score &&
-                community.user_rating &&
-                community.github_repository &&
-                community.stackoverflow_tags
-
-            if (hasAllFields) {
-                log(
-                    `Skipping community ${i + 1}/${communityRecords.length}: ${community.community_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedCommunityRecords.push(community)
-                continue
-            }
-
-            // Get associated platform
-            const platform = platformsMap.get(community.platform_id) as Platform
-
-            // Enrich community data
-            const enrichedCommunity = await enrichCommunityData(community, platform)
-            enrichedCommunityRecords.push(enrichedCommunity)
-
-            // Log progress
-            log(`Processed community ${i + 1}/${communityRecords.length} for platform: ${platform.platform_name}`, "info")
-
-            // Rate limiting delay (except for last item)
-            if (i < communityRecords.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing community ${communityRecords[i].community_id || "unknown"}: ${error.message}`, "error")
-            enrichedCommunityRecords.push(communityRecords[i]) // Add original data if enrichment fails
-        }
+    const platform = platforms.find((p) => p.platform_id === community.platform_id)
+    if (!platform) {
+      log(`Platform not found for community_id: ${community.community_id}`, "warning")
+      return community
     }
 
-    return enrichedCommunityRecords
+    const prompt = `
+Provide enriched community data for the AI platform "${platform.platform_name}" in the following JSON format:
+{
+  "community_size": "Estimated number of users/developers (e.g., 5000, 10000+, etc.)",
+  "community_engagement_score": "A score from 0-100 representing community activity level",
+  "user_rating": "Average user rating from 0-5",
+  "github_repository": "URL to the platform's GitHub repository if open source",
+  "stackoverflow_tags": "Common Stack Overflow tags related to this platform",
+  "academic_papers": "Number or list of academic papers referencing this platform",
+  "case_studies": "Brief description of notable case studies using this platform"
 }
 
-/**
- * Main function
- */
+Return only the JSON object with realistic, accurate information about ${platform.platform_name}'s community.
+        `
+    const enriched = await makeOpenAIRequest<Partial<Community>>(openai, prompt)
+    const enrichedCommunity: Community = {
+      ...community,
+      ...enriched,
+      updatedAt: new Date().toISOString(),
+    }
+
+    const validation = validateCommunity(enrichedCommunity)
+    if (!validation.valid) {
+      log(`Validation failed for ${community.community_id}: ${validation.errors.join(", ")}`, "warning")
+    }
+
+    return enrichedCommunity
+  } catch (error: any) {
+    log(`Failed to enrich community ${community.community_id}: ${error.message}`, "error")
+    return community
+  }
+}
+
+// ---- Processing ----
+async function processCommunities(communities: Community[], platforms: Platform[]): Promise<Community[]> {
+  const processed: Community[] = []
+
+  for (let i = 0; i < communities.length; i++) {
+    const community = communities[i]
+
+    if (isComplete(community)) {
+      log(`Skipping ${community.community_id} (already complete)`, "info")
+      processed.push(community)
+      continue
+    }
+
+    const enriched = await enrichCommunity(community, platforms)
+    processed.push(enriched)
+
+    if (i < communities.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
+}
+
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting community processing...", "info")
+  try {
+    log("Starting community processor...", "info")
 
-        // Load platforms and community records
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
-
-        let communityRecords = loadCsvData<Community>(COMMUNITY_CSV_PATH)
-
-        // Create backup of community file if it exists and has data
-        if (fs.existsSync(COMMUNITY_CSV_PATH) && communityRecords.length > 0) {
-            createBackup(COMMUNITY_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate community records against platforms
-        communityRecords = validateCommunityAgainstPlatforms(communityRecords, platformsMap)
-
-        // Enrich community data
-        communityRecords = await processCommunityWithRateLimit(communityRecords, platformsMap)
-
-        // Save to CSV
-        saveCsvData(COMMUNITY_CSV_PATH, communityRecords)
-
-        log("Community processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Load platforms data
+    if (!fs.existsSync(PLATFORMS_CSV_PATH)) {
+      log("Platforms.csv not found. Please run process-platforms.ts first.", "error")
+      process.exit(1)
     }
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    log(`Loaded ${platforms.length} platforms`, "info")
+
+    // Load or initialize community data
+    const communities = fs.existsSync(COMMUNITY_CSV_PATH) ? loadCsvData<Community>(COMMUNITY_CSV_PATH) : []
+
+    // Create community entries for platforms without one
+    const platformIds = new Set(communities.map((c) => c.platform_id))
+    const newCommunities: Community[] = []
+
+    for (const platform of platforms) {
+      if (!platformIds.has(platform.platform_id)) {
+        const newCommunity: Community = {
+          community_id: `community_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          platform_id: platform.platform_id,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        newCommunities.push(newCommunity)
+        log(`Created new community entry for platform: ${platform.platform_name}`, "info")
+      }
+    }
+
+    const allCommunities = [...communities, ...newCommunities]
+
+    // Create backup if file exists
+    if (fs.existsSync(COMMUNITY_CSV_PATH) && fs.statSync(COMMUNITY_CSV_PATH).size > 0) {
+      createBackup(COMMUNITY_CSV_PATH, BACKUP_DIR)
+    }
+
+    // Process and enrich communities
+    const enriched = await processCommunities(allCommunities, platforms)
+    saveCsvData(COMMUNITY_CSV_PATH, enriched)
+
+    log(`Community processor complete. Processed ${enriched.length} records ✅`, "info")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

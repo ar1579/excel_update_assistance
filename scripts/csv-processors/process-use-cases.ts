@@ -2,358 +2,222 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
+import { createBackup, loadCsvData, saveCsvData } from "../../utils/file-utils"
 import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
-import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface UseCase {
+  use_case_id: string
+  model_id: string
+  primary_use_case?: string
+  secondary_use_case?: string
+  specialized_domains?: string
+  supported_tasks?: string
+  limitations?: string
+  typical_use_case?: string
+  createdAt: string
+  updatedAt: string
+  [key: string]: string | undefined
+}
+
+interface Model {
+  model_id: string
+  model_family: string
+  model_version: string
+  platform_id: string
+  model_type?: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const USE_CASES_CSV_PATH = path.join(DATA_DIR, "Use_Cases.csv")
 const MODELS_CSV_PATH = path.join(DATA_DIR, "Models.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
-const MODEL_USE_CASES_CSV_PATH = path.join(DATA_DIR, "model_use_cases.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Use Case data structure
-interface UseCase {
-    use_case_id: string
-    model_id: string
-    primary_use_case: string
-    secondary_use_cases?: string
-    specialized_domains?: string
-    supported_tasks?: string
-    limitations?: string
-    typical_use_cases?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Model data structure
-interface Model {
-    model_id: string
-    platform_id: string
-    model_family?: string
-    model_version?: string
-    model_type?: string
-    model_architecture?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Model-UseCase join table structure
-interface ModelUseCase {
-    model_id: string
-    use_case_id: string
-    createdAt?: string
-    updatedAt?: string
-}
-
-/**
- * Validate use case data against schema constraints
- */
+// ---- Validation ----
 function validateUseCase(useCase: UseCase): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!useCase.model_id) {
-        errors.push("model_id is required")
-    }
+  if (!useCase.use_case_id) errors.push("use_case_id is required")
+  if (!useCase.model_id) errors.push("model_id is required")
+  if (!useCase.primary_use_case) errors.push("primary_use_case is required")
 
-    if (!useCase.primary_use_case) {
-        errors.push("primary_use_case is required")
-    }
-
-    return {
-        valid: errors.length === 0,
-        errors,
-    }
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate use cases against models
- */
-function validateUseCasesAgainstModels(useCases: UseCase[], modelsMap: Map<string, Model>): UseCase[] {
-    log("Validating use cases against models...", "info")
-
-    // If no use cases, create default ones for testing
-    if (useCases.length === 0 && modelsMap.size > 0) {
-        log("No use cases found in CSV, creating default use cases for testing", "warning")
-        const newUseCases: UseCase[] = []
-
-        // Create a default use case for each model
-        for (const [modelId, model] of modelsMap.entries()) {
-            const defaultUseCase: UseCase = {
-                use_case_id: `uc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                model_id: modelId,
-                primary_use_case: "General purpose AI",
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newUseCases.push(defaultUseCase)
-            log(`Created default use case for model: ${model.model_family} ${model.model_version}`, "info")
-        }
-
-        return newUseCases
-    }
-
-    const validUseCases = useCases.filter((useCase) => {
-        const modelId = useCase.model_id
-        if (!modelId) {
-            log(`Use case ${useCase.use_case_id || "unknown"} has no model ID, skipping`, "warning")
-            return false
-        }
-
-        const modelExists = modelsMap.has(modelId)
-        if (!modelExists) {
-            log(`Use case ${useCase.use_case_id || "unknown"} references non-existent model ${modelId}, skipping`, "warning")
-            return false
-        }
-
-        return true
-    })
-
-    log(`Validated ${validUseCases.length}/${useCases.length} use cases`, "info")
-    return validUseCases
+// ---- Completeness ----
+function isComplete(useCase: UseCase): boolean {
+  return (
+    !!useCase.primary_use_case &&
+    !!useCase.secondary_use_case &&
+    !!useCase.specialized_domains &&
+    !!useCase.supported_tasks &&
+    !!useCase.limitations
+  )
 }
 
-/**
- * Enrich use case data using OpenAI
- */
-async function enrichUseCaseData(useCase: UseCase, model: Model, platform: Platform): Promise<UseCase> {
-    try {
-        log(`Enriching use case data for model: ${model.model_family || ""} ${model.model_version || ""}`, "info")
+// ---- Enrichment via OpenAI ----
+async function enrichUseCase(useCase: UseCase, models: Model[], platforms: Platform[]): Promise<UseCase> {
+  try {
+    log(`Enriching use case for: ${useCase.use_case_id}`, "info")
 
-        const prompt = `
-Provide accurate use case information for the AI model "${model.model_family || ""} ${model.model_version || ""}" from the platform "${platform.platform_name}" in JSON format with the following fields:
-- primary_use_case: The main use case for this model (e.g., "Text generation", "Image recognition", "Code completion")
-- secondary_use_cases: Other important use cases, comma-separated (e.g., "Translation, Summarization, Question answering")
-- specialized_domains: Domains where this model excels, comma-separated (e.g., "Healthcare, Finance, Legal")
-- supported_tasks: Specific tasks the model can perform (e.g., "Text classification, Named entity recognition, Sentiment analysis")
-- limitations: Known limitations of the model (e.g., "Limited context window, Struggles with complex reasoning, Hallucinations")
-- typical_use_cases: Examples of typical applications (e.g., "Customer support chatbots, Content generation for marketing, Code assistance for developers")
-
-Additional context about the model:
-Model type: ${model.model_type || "Unknown"}
-Model architecture: ${model.model_architecture || "Unknown"}
-Platform category: ${platform.platform_category || "Unknown"}
-Platform sub-category: ${platform.platform_sub_category || "Unknown"}
-Platform description: ${platform.platform_description || "No description available"}
-
-If any information is not known with confidence, use null for that field.
-Return ONLY the JSON object with no additional text.
-`
-
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<UseCase>>(openai, prompt)
-
-        // Update timestamp
-        const timestamp = new Date().toISOString()
-
-        // Merge with existing use case data, only updating null/undefined fields
-        const updatedUseCase: UseCase = { ...useCase }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedUseCase[key] === undefined || updatedUseCase[key] === null || updatedUseCase[key] === "") {
-                updatedUseCase[key] = enrichedData[key as keyof Partial<UseCase>]
-            }
-        })
-
-        updatedUseCase.updatedAt = timestamp
-
-        // Validate the enriched use case data
-        const validation = validateUseCase(updatedUseCase)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched use case for ${model.model_family || ""} ${model.model_version || ""}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedUseCase
-    } catch (error: any) {
-        log(
-            `Error enriching use case for ${model.model_family || ""} ${model.model_version || ""}: ${error.message}`,
-            "error",
-        )
-        return useCase
-    }
-}
-
-/**
- * Process all use cases with rate limiting
- */
-async function processUseCasesWithRateLimit(
-    useCases: UseCase[],
-    modelsMap: Map<string, Model>,
-    platformsMap: Map<string, Platform>,
-): Promise<UseCase[]> {
-    const enrichedUseCases: UseCase[] = []
-
-    for (let i = 0; i < useCases.length; i++) {
-        try {
-            // Skip use cases that already have all fields filled
-            const useCase = useCases[i]
-            const hasAllFields =
-                useCase.primary_use_case &&
-                useCase.secondary_use_cases &&
-                useCase.specialized_domains &&
-                useCase.supported_tasks &&
-                useCase.limitations &&
-                useCase.typical_use_cases
-
-            if (hasAllFields) {
-                log(
-                    `Skipping use case ${i + 1}/${useCases.length}: ${useCase.use_case_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedUseCases.push(useCase)
-                continue
-            }
-
-            // Get associated model
-            const model = modelsMap.get(useCase.model_id) as Model
-
-            // Get associated platform
-            const platform = platformsMap.get(model.platform_id) as Platform
-
-            // Enrich use case data
-            const enrichedUseCase = await enrichUseCaseData(useCase, model, platform)
-            enrichedUseCases.push(enrichedUseCase)
-
-            // Log progress
-            log(
-                `Processed use case ${i + 1}/${useCases.length} for model: ${model.model_family || ""} ${model.model_version || ""}`,
-                "info",
-            )
-
-            // Rate limiting delay (except for last item)
-            if (i < useCases.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing use case ${useCases[i].use_case_id || "unknown"}: ${error.message}`, "error")
-            enrichedUseCases.push(useCases[i]) // Add original data if enrichment fails
-        }
+    const model = models.find((m) => m.model_id === useCase.model_id)
+    if (!model) {
+      log(`Model not found for use_case_id: ${useCase.use_case_id}`, "warning")
+      return useCase
     }
 
-    return enrichedUseCases
+    const platform = platforms.find((p) => p.platform_id === model.platform_id)
+    const platformName = platform ? platform.platform_name : "Unknown Platform"
+    const modelType = model.model_type || "LLM"
+
+    const prompt = `
+Provide enriched use case data for the AI model "${model.model_family} ${model.model_version}" from platform "${platformName}" in the following JSON format:
+{
+  "primary_use_case": "The main use case for this model",
+  "secondary_use_case": "Secondary or additional use cases",
+  "specialized_domains": "Specific domains where this model excels (e.g., healthcare, finance, legal)",
+  "supported_tasks": "Specific tasks this model can perform",
+  "limitations": "Known limitations or weaknesses of this model",
+  "typical_use_case": "A detailed example of a typical use case scenario"
 }
 
-/**
- * Update the model_use_cases join table
- */
-function updateModelUseCasesJoinTable(useCases: UseCase[]): void {
-    try {
-        log("Updating model_use_cases join table...", "info")
-
-        // Load existing join table data
-        let modelUseCases: ModelUseCase[] = []
-        if (fs.existsSync(MODEL_USE_CASES_CSV_PATH)) {
-            modelUseCases = loadCsvData<ModelUseCase>(MODEL_USE_CASES_CSV_PATH)
-        }
-
-        // Create a map of existing relationships
-        const existingRelationships = new Set<string>()
-        modelUseCases.forEach((relation) => {
-            existingRelationships.add(`${relation.model_id}-${relation.use_case_id}`)
-        })
-
-        // Add new relationships
-        const timestamp = new Date().toISOString()
-        let newRelationsCount = 0
-
-        useCases.forEach((useCase) => {
-            const relationKey = `${useCase.model_id}-${useCase.use_case_id}`
-            if (!existingRelationships.has(relationKey)) {
-                modelUseCases.push({
-                    model_id: useCase.model_id,
-                    use_case_id: useCase.use_case_id,
-                    createdAt: timestamp,
-                    updatedAt: timestamp,
-                })
-                existingRelationships.add(relationKey)
-                newRelationsCount++
-            }
-        })
-
-        // Save updated join table
-        saveCsvData(MODEL_USE_CASES_CSV_PATH, modelUseCases)
-        log(`Updated model_use_cases join table with ${newRelationsCount} new relationships`, "info")
-    } catch (error: any) {
-        log(`Error updating model_use_cases join table: ${error.message}`, "error")
+The model is of type "${modelType}". Return only the JSON object with realistic, accurate use case information for this type of AI model.
+        `
+    const enriched = await makeOpenAIRequest<Partial<UseCase>>(openai, prompt)
+    const enrichedUseCase: UseCase = {
+      ...useCase,
+      ...enriched,
+      updatedAt: new Date().toISOString(),
     }
+
+    const validation = validateUseCase(enrichedUseCase)
+    if (!validation.valid) {
+      log(`Validation failed for ${useCase.use_case_id}: ${validation.errors.join(", ")}`, "warning")
+    }
+
+    return enrichedUseCase
+  } catch (error: any) {
+    log(`Failed to enrich use case ${useCase.use_case_id}: ${error.message}`, "error")
+    return useCase
+  }
 }
 
-/**
- * Main function
- */
+// ---- Processing ----
+async function processUseCases(useCases: UseCase[], models: Model[], platforms: Platform[]): Promise<UseCase[]> {
+  const processed: UseCase[] = []
+
+  for (let i = 0; i < useCases.length; i++) {
+    const useCase = useCases[i]
+
+    if (isComplete(useCase)) {
+      log(`Skipping ${useCase.use_case_id} (already complete)`, "info")
+      processed.push(useCase)
+      continue
+    }
+
+    const enriched = await enrichUseCase(useCase, models, platforms)
+    processed.push(enriched)
+
+    if (i < useCases.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
+}
+
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting use cases processing...", "info")
+  try {
+    log("Starting use cases processor...", "info")
 
-        // Load models, platforms, and use cases
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
-
-        const models = loadCsvData<Model>(MODELS_CSV_PATH)
-        const modelsMap = createLookupMap(models, "model_id")
-
-        let useCases = loadCsvData<UseCase>(USE_CASES_CSV_PATH)
-
-        // Create backup of use cases file if it exists and has data
-        if (fs.existsSync(USE_CASES_CSV_PATH) && useCases.length > 0) {
-            createBackup(USE_CASES_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate use cases against models
-        useCases = validateUseCasesAgainstModels(useCases, modelsMap)
-
-        // Enrich use case data
-        useCases = await processUseCasesWithRateLimit(useCases, modelsMap, platformsMap)
-
-        // Save to CSV
-        saveCsvData(USE_CASES_CSV_PATH, useCases)
-
-        // Update the model_use_cases join table
-        updateModelUseCasesJoinTable(useCases)
-
-        log("Use cases processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Load models data
+    if (!fs.existsSync(MODELS_CSV_PATH)) {
+      log("Models.csv not found. Please run process-models.ts first.", "error")
+      process.exit(1)
     }
+    const models = loadCsvData<Model>(MODELS_CSV_PATH)
+    log(`Loaded ${models.length} models`, "info")
+
+    // Load platforms data
+    if (!fs.existsSync(PLATFORMS_CSV_PATH)) {
+      log("Platforms.csv not found. Please run process-platforms.ts first.", "error")
+      process.exit(1)
+    }
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    log(`Loaded ${platforms.length} platforms`, "info")
+
+    // Load or initialize use cases data
+    const useCases = fs.existsSync(USE_CASES_CSV_PATH) ? loadCsvData<UseCase>(USE_CASES_CSV_PATH) : []
+
+    // Create use case entries for models without one
+    const modelWithUseCases = new Map<string, number>()
+    for (const useCase of useCases) {
+      const count = modelWithUseCases.get(useCase.model_id) || 0
+      modelWithUseCases.set(useCase.model_id, count + 1)
+    }
+
+    const newUseCases: UseCase[] = []
+    for (const model of models) {
+      // Create at least one use case per model, up to 3 for important models
+      const existingCount = modelWithUseCases.get(model.model_id) || 0
+      const targetCount =
+        model.model_family.toLowerCase().includes("gpt") ||
+        model.model_family.toLowerCase().includes("llama") ||
+        model.model_family.toLowerCase().includes("claude")
+          ? 3
+          : 1
+
+      for (let i = existingCount; i < targetCount; i++) {
+        const newUseCase: UseCase = {
+          use_case_id: `use_case_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          model_id: model.model_id,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        newUseCases.push(newUseCase)
+        log(`Created new use case entry for model: ${model.model_family} ${model.model_version}`, "info")
+        await applyRateLimit(100) // Small delay to ensure unique IDs
+      }
+    }
+
+    const allUseCases = [...useCases, ...newUseCases]
+
+    // Create backup if file exists
+    if (fs.existsSync(USE_CASES_CSV_PATH) && fs.statSync(USE_CASES_CSV_PATH).size > 0) {
+      createBackup(USE_CASES_CSV_PATH, BACKUP_DIR)
+    }
+
+    // Process and enrich use cases
+    const enriched = await processUseCases(allUseCases, models, platforms)
+    saveCsvData(USE_CASES_CSV_PATH, enriched)
+
+    log(`Use cases processor complete. Processed ${enriched.length} records ✅`, "info")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

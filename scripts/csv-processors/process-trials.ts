@@ -2,285 +2,225 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
-import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
 import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
+import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Trial {
+  trial_id: string
+  platform_id: string
+  free_trial_plan?: string
+  trial_duration?: string
+  trial_duration_unit?: string
+  usage_limits?: string
+  createdAt?: string
+  updatedAt?: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  platform_url: string
+  platform_category?: string
+  platform_sub_category?: string
+  platform_description?: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const TRIALS_CSV_PATH = path.join(DATA_DIR, "Trials.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
-const PRICING_CSV_PATH = path.join(DATA_DIR, "Pricing.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
-}
-
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Trial data structure
-interface Trial {
-    trial_id: string
-    platform_id: string
-    free_trial_plan?: string
-    trial_duration?: string
-    trial_duration_unit?: string
-    usage_limits?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_url: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-// Pricing data structure
-interface Pricing {
-    pricing_id: string
-    platform_id: string
-    pricing_model?: string
-    starting_price?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
-
-/**
- * Validate trial data against schema constraints
- */
+// ---- Validation ----
 function validateTrial(trial: Trial): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
+  const errors: string[] = []
 
-    // Check required fields
-    if (!trial.platform_id) {
-        errors.push("platform_id is required")
-    }
+  if (!trial.trial_id) errors.push("trial_id is required")
+  if (!trial.platform_id) errors.push("platform_id is required")
 
-    // Check trial_duration_unit constraint if present
-    if (trial.trial_duration_unit && !["Day", "Week", "Month", "Year"].includes(trial.trial_duration_unit)) {
-        errors.push("trial_duration_unit must be one of: Day, Week, Month, Year")
-    }
+  // Check trial_duration_unit constraint if present
+  if (trial.trial_duration_unit && !["Day", "Week", "Month", "Year"].includes(trial.trial_duration_unit)) {
+    errors.push("trial_duration_unit must be one of: Day, Week, Month, Year")
+  }
 
-    return {
-        valid: errors.length === 0,
-        errors,
-    }
+  return { valid: errors.length === 0, errors }
 }
 
-/**
- * Validate trials against platforms
- */
-function validateTrialsAgainstPlatforms(trials: Trial[], platformsMap: Map<string, Platform>): Trial[] {
-    log("Validating trials against platforms...", "info")
+// ---- Validate trials against platforms ----
+function validateTrialsAgainstPlatforms(trialRecords: Trial[], platformsMap: Map<string, Platform>): Trial[] {
+  log("Validating trials against platforms...", "info")
 
-    // If no trials, create default ones for testing
-    if (trials.length === 0 && platformsMap.size > 0) {
-        log("No trials found in CSV, creating default trials for testing", "warning")
-        const newTrials: Trial[] = []
+  // If no trial records, create default ones for testing
+  if (trialRecords.length === 0 && platformsMap.size > 0) {
+    log("No trial records found in CSV, creating default trials for testing", "warning")
+    const newTrialRecords: Trial[] = []
 
-        // Create a default trial for each platform
-        for (const [platformId, platform] of platformsMap.entries()) {
-            const defaultTrial: Trial = {
-                trial_id: `trial_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                platform_id: platformId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newTrials.push(defaultTrial)
-            log(`Created default trial for platform: ${platform.platform_name}`, "info")
-        }
-
-        return newTrials
+    // Create a default trial record for each platform
+    for (const [platformId, platform] of platformsMap.entries()) {
+      const defaultTrial: Trial = {
+        trial_id: `trial_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        platform_id: platformId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      newTrialRecords.push(defaultTrial)
+      log(`Created default trial for platform: ${platform.platform_name}`, "info")
     }
 
-    const validTrials = trials.filter((trial) => {
-        const platformId = trial.platform_id
-        if (!platformId) {
-            log(`Trial ${trial.trial_id || "unknown"} has no platform ID, skipping`, "warning")
-            return false
-        }
+    return newTrialRecords
+  }
 
-        const platformExists = platformsMap.has(platformId)
-        if (!platformExists) {
-            log(`Trial ${trial.trial_id || "unknown"} references non-existent platform ${platformId}, skipping`, "warning")
-            return false
-        }
+  const validTrialRecords = trialRecords.filter((trial) => {
+    const platformId = trial.platform_id
+    if (!platformId) {
+      log(`Trial ${trial.trial_id || "unknown"} has no platform ID, skipping`, "warning")
+      return false
+    }
 
-        return true
-    })
+    const platformExists = platformsMap.has(platformId)
+    if (!platformExists) {
+      log(`Trial ${trial.trial_id || "unknown"} references non-existent platform ${platformId}, skipping`, "warning")
+      return false
+    }
 
-    log(`Validated ${validTrials.length}/${trials.length} trials`, "info")
-    return validTrials
+    return true
+  })
+
+  log(`Validated ${validTrialRecords.length}/${trialRecords.length} trial records`, "info")
+  return validTrialRecords
 }
 
-/**
- * Enrich trial data using OpenAI
- */
-async function enrichTrialData(trial: Trial, platform: Platform, pricingMap: Map<string, Pricing>): Promise<Trial> {
-    try {
-        log(`Enriching trial data for platform: ${platform.platform_name}`, "info")
+// ---- Completeness ----
+function isComplete(trial: Trial): boolean {
+  return !!(trial.free_trial_plan && trial.trial_duration && trial.trial_duration_unit && trial.usage_limits)
+}
 
-        // Get pricing information if available
-        const pricing = Array.from(pricingMap.values()).find((p) => p.platform_id === platform.platform_id)
-        const pricingInfo = pricing
-            ? `Pricing model: ${pricing.pricing_model || "Unknown"}, Starting price: ${pricing.starting_price || "Unknown"}`
-            : "No pricing information available"
+// ---- Enrichment via OpenAI ----
+async function enrichTrial(trial: Trial, platform: Platform): Promise<Trial> {
+  try {
+    log(`Enriching trial for platform: ${platform.platform_name}`, "info")
 
-        const prompt = `
+    const prompt = `
 Provide accurate free trial information about the AI platform "${platform.platform_name}" in JSON format with the following fields:
-- free_trial_plan: Description of the free trial plan (e.g., "Basic features with limited usage", "Full access with time limit")
-- trial_duration: The duration of the free trial as a number (e.g., "14", "30", "7")
-- trial_duration_unit: The unit of the trial duration (must be one of: "Day", "Week", "Month", "Year")
-- usage_limits: Any usage limits during the trial period (e.g., "1000 API calls", "5 users", "Limited to 100MB data")
+- free_trial_plan: Description of the free trial offering (e.g., "14-day free trial", "Free tier with limited features", "No free trial")
+- trial_duration: The duration of the trial as a number (e.g., "14", "30", "7")
+- trial_duration_unit: The unit of time for the trial duration (must be one of: "Day", "Week", "Month", "Year")
+- usage_limits: Limitations during the trial period (e.g., "5,000 API calls", "Limited to 3 users", "1GB storage")
 
 Additional context about the platform:
 Platform URL: ${platform.platform_url || "Not available"}
 Platform category: ${platform.platform_category || "Unknown"}
 Platform description: ${platform.platform_description || "No description available"}
-${pricingInfo}
 
 If any information is not known with confidence, use null for that field.
-If the platform does not offer a free trial, set free_trial_plan to "None" and leave other fields as null.
+If the platform does not offer a free trial, set free_trial_plan to "No free trial" and other fields to null.
 Return ONLY the JSON object with no additional text.
-`
+        `
+    const enriched = await makeOpenAIRequest<Partial<Trial>>(openai, prompt)
 
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Trial>>(openai, prompt)
+    // Update timestamp
+    const timestamp = new Date().toISOString()
 
-        // Update timestamp
-        const timestamp = new Date().toISOString()
+    // Merge with existing trial data, only updating null/undefined fields
+    const enrichedTrial: Trial = { ...trial }
+    Object.keys(enriched).forEach((key) => {
+      if (enrichedTrial[key] === undefined || enrichedTrial[key] === null || enrichedTrial[key] === "") {
+        enrichedTrial[key] = enriched[key as keyof Partial<Trial>]
+      }
+    })
 
-        // Merge with existing trial data, only updating null/undefined fields
-        const updatedTrial: Trial = { ...trial }
-        Object.keys(enrichedData).forEach((key) => {
-            if (updatedTrial[key] === undefined || updatedTrial[key] === null || updatedTrial[key] === "") {
-                updatedTrial[key] = enrichedData[key as keyof Partial<Trial>]
-            }
-        })
+    enrichedTrial.updatedAt = timestamp
 
-        updatedTrial.updatedAt = timestamp
-
-        // Validate the enriched trial data
-        const validation = validateTrial(updatedTrial)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched trial for ${platform.platform_name}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedTrial
-    } catch (error: any) {
-        log(`Error enriching trial for ${platform.platform_name}: ${error.message}`, "error")
-        return trial
-    }
-}
-
-/**
- * Process all trials with rate limiting
- */
-async function processTrialsWithRateLimit(
-    trials: Trial[],
-    platformsMap: Map<string, Platform>,
-    pricingMap: Map<string, Pricing>,
-): Promise<Trial[]> {
-    const enrichedTrials: Trial[] = []
-
-    for (let i = 0; i < trials.length; i++) {
-        try {
-            // Skip trials that already have all fields filled
-            const trial = trials[i]
-            const hasAllFields =
-                trial.free_trial_plan && trial.trial_duration && trial.trial_duration_unit && trial.usage_limits
-
-            if (hasAllFields) {
-                log(`Skipping trial ${i + 1}/${trials.length}: ${trial.trial_id || "unknown"} (already complete)`, "info")
-                enrichedTrials.push(trial)
-                continue
-            }
-
-            // Get associated platform
-            const platform = platformsMap.get(trial.platform_id) as Platform
-
-            // Enrich trial data
-            const enrichedTrial = await enrichTrialData(trial, platform, pricingMap)
-            enrichedTrials.push(enrichedTrial)
-
-            // Log progress
-            log(`Processed trial ${i + 1}/${trials.length} for platform: ${platform.platform_name}`, "info")
-
-            // Rate limiting delay (except for last item)
-            if (i < trials.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing trial ${trials[i].trial_id || "unknown"}: ${error.message}`, "error")
-            enrichedTrials.push(trials[i]) // Add original data if enrichment fails
-        }
+    const validation = validateTrial(enrichedTrial)
+    if (!validation.valid) {
+      log(`Validation failed for trial ${trial.trial_id}: ${validation.errors.join(", ")}`, "warning")
     }
 
-    return enrichedTrials
+    return enrichedTrial
+  } catch (error: any) {
+    log(`Failed to enrich trial for ${platform.platform_name}: ${error.message}`, "error")
+    return trial
+  }
 }
 
-/**
- * Main function
- */
+// ---- Processing ----
+async function processTrials(trialRecords: Trial[], platformsMap: Map<string, Platform>): Promise<Trial[]> {
+  const processed: Trial[] = []
+
+  for (let i = 0; i < trialRecords.length; i++) {
+    const trial = trialRecords[i]
+    const platform = platformsMap.get(trial.platform_id)
+
+    if (!platform) {
+      log(`Platform not found for trial with platform_id: ${trial.platform_id}`, "error")
+      processed.push(trial)
+      continue
+    }
+
+    if (isComplete(trial)) {
+      log(`Skipping trial ${i + 1}/${trialRecords.length}: ${trial.trial_id} (already complete)`, "info")
+      processed.push(trial)
+      continue
+    }
+
+    const enriched = await enrichTrial(trial, platform)
+    processed.push(enriched)
+
+    log(`Processed trial ${i + 1}/${trialRecords.length} for platform: ${platform.platform_name}`, "info")
+
+    if (i < trialRecords.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
+}
+
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting trials processing...", "info")
+  try {
+    log("Starting trials processor...", "info")
 
-        // Load platforms, pricing, and trials
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
+    // Load platforms and trials
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    const platformsMap = createLookupMap(platforms, "platform_id")
 
-        const pricing = loadCsvData<Pricing>(PRICING_CSV_PATH)
-        const pricingMap = createLookupMap(pricing, "pricing_id")
+    let trialRecords = loadCsvData<Trial>(TRIALS_CSV_PATH)
 
-        let trials = loadCsvData<Trial>(TRIALS_CSV_PATH)
-
-        // Create backup of trials file if it exists and has data
-        if (fs.existsSync(TRIALS_CSV_PATH) && trials.length > 0) {
-            createBackup(TRIALS_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate trials against platforms
-        trials = validateTrialsAgainstPlatforms(trials, platformsMap)
-
-        // Enrich trial data
-        trials = await processTrialsWithRateLimit(trials, platformsMap, pricingMap)
-
-        // Save to CSV
-        saveCsvData(TRIALS_CSV_PATH, trials)
-
-        log("Trials processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Create backup of trials file if it exists and has data
+    if (fs.existsSync(TRIALS_CSV_PATH) && fs.statSync(TRIALS_CSV_PATH).size > 0) {
+      createBackup(TRIALS_CSV_PATH, BACKUP_DIR)
     }
+
+    // Validate trials against platforms
+    trialRecords = validateTrialsAgainstPlatforms(trialRecords, platformsMap)
+
+    // Process and enrich trial data
+    trialRecords = await processTrials(trialRecords, platformsMap)
+
+    // Save to CSV
+    saveCsvData(TRIALS_CSV_PATH, trialRecords)
+
+    log("Trials processing completed successfully ✅", "success")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 

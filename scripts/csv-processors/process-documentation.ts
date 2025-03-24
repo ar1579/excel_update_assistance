@@ -2,289 +2,218 @@ import fs from "fs"
 import path from "path"
 import dotenv from "dotenv"
 import { log } from "../../utils/logging"
+import { createBackup, loadCsvData, saveCsvData } from "../../utils/file-utils"
 import { initializeOpenAI, makeOpenAIRequest, applyRateLimit } from "../../utils/openai-utils"
-import { createBackup, loadCsvData, saveCsvData, createLookupMap } from "../../utils/file-utils"
 
-// Load environment variables
+// Load env
 dotenv.config()
 
-// Check for OpenAI API key
 if (!process.env.OPENAI_API_KEY) {
-    log("OPENAI_API_KEY environment variable is not set", "error")
-    process.exit(1)
+  log("Missing OpenAI API Key", "error")
+  process.exit(1)
 }
 
-// Initialize OpenAI client
-const openai = initializeOpenAI(process.env.OPENAI_API_KEY)
+const openai = initializeOpenAI(process.env.OPENAI_API_KEY!)
+const DELAY = 1000
 
-// File paths
-const ROOT_DIR = process.cwd()
-const DATA_DIR = path.join(ROOT_DIR, "data")
-const BACKUP_DIR = path.join(ROOT_DIR, "backups")
+// ---- Define Types ----
+interface Documentation {
+  doc_id: string
+  platform_id: string
+  documentation_description?: string
+  doc_quality?: string
+  documentation_url?: string
+  faq_url?: string
+  forum_url?: string
+  example_code_available?: string
+  example_code_languages?: string
+  video_tutorials_available?: string
+  learning_curve_rating?: string
+  createdAt: string
+  updatedAt: string
+  [key: string]: string | undefined
+}
+
+interface Platform {
+  platform_id: string
+  platform_name: string
+  [key: string]: string | undefined
+}
+
+// ---- File Paths ----
+const DATA_DIR = path.join(process.cwd(), "data")
 const DOCUMENTATION_CSV_PATH = path.join(DATA_DIR, "Documentation.csv")
 const PLATFORMS_CSV_PATH = path.join(DATA_DIR, "Platforms.csv")
+const BACKUP_DIR = path.join(process.cwd(), "backups")
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    log(`Created directory: ${DATA_DIR}`, "info")
+// ---- Validation ----
+function validateDocumentation(doc: Documentation): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+
+  if (!doc.doc_id) errors.push("doc_id is required")
+  if (!doc.platform_id) errors.push("platform_id is required")
+
+  // URL validations
+  if (doc.documentation_url && !doc.documentation_url.startsWith("http")) {
+    errors.push("documentation_url must be a valid URL")
+  }
+  if (doc.faq_url && !doc.faq_url.startsWith("http")) {
+    errors.push("faq_url must be a valid URL")
+  }
+  if (doc.forum_url && !doc.forum_url.startsWith("http")) {
+    errors.push("forum_url must be a valid URL")
+  }
+
+  // Boolean validations
+  if (doc.example_code_available && !["Yes", "No"].includes(doc.example_code_available)) {
+    errors.push("example_code_available must be 'Yes' or 'No'")
+  }
+  if (doc.video_tutorials_available && !["Yes", "No"].includes(doc.video_tutorials_available)) {
+    errors.push("video_tutorials_available must be 'Yes' or 'No'")
+  }
+
+  // Rating validation
+  if (
+    doc.learning_curve_rating &&
+    !["Easy", "Moderate", "Difficult", "Very Difficult"].includes(doc.learning_curve_rating)
+  ) {
+    errors.push("learning_curve_rating must be one of: Easy, Moderate, Difficult, Very Difficult")
+  }
+
+  return { valid: errors.length === 0, errors }
 }
 
-// Rate limiting settings
-const DELAY_BETWEEN_REQUESTS = 1000 // 1 second
-
-// Documentation data structure
-interface Documentation {
-    doc_id: string
-    platform_id: string
-    documentation_description?: string
-    doc_quality?: string
-    documentation_url?: string
-    faq_url?: string
-    forum_url?: string
-    example_code_available?: string
-    example_code_languages?: string
-    video_tutorials_available?: string
-    learning_curve_rating?: string
-    createdAt?: string
-    updatedAt?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
+// ---- Completeness ----
+function isComplete(doc: Documentation): boolean {
+  return (
+    !!doc.documentation_description &&
+    !!doc.doc_quality &&
+    !!doc.documentation_url &&
+    !!doc.example_code_available &&
+    !!doc.learning_curve_rating
+  )
 }
 
-// Platform data structure
-interface Platform {
-    platform_id: string
-    platform_name: string
-    platform_url: string
-    platform_category?: string
-    platform_sub_category?: string
-    platform_description?: string
-    [key: string]: string | undefined // Allow any string key for dynamic access
-}
+// ---- Enrichment via OpenAI ----
+async function enrichDocumentation(doc: Documentation, platforms: Platform[]): Promise<Documentation> {
+  try {
+    log(`Enriching documentation for: ${doc.doc_id}`, "info")
 
-/**
- * Validate documentation data against schema constraints
- */
-function validateDocumentation(documentation: Documentation): { valid: boolean; errors: string[] } {
-    const errors: string[] = []
-
-    // Check required fields
-    if (!documentation.platform_id) {
-        errors.push("platform_id is required")
+    const platform = platforms.find((p) => p.platform_id === doc.platform_id)
+    if (!platform) {
+      log(`Platform not found for doc_id: ${doc.doc_id}`, "warning")
+      return doc
     }
 
-    return {
-        valid: errors.length === 0,
-        errors,
-    }
+    const prompt = `
+Provide enriched documentation data for the AI platform "${platform.platform_name}" in the following JSON format:
+{
+  "documentation_description": "A comprehensive description of the documentation available",
+  "doc_quality": "Excellent, Good, Average, Poor, or Minimal",
+  "documentation_url": "The main URL for the platform's documentation (if not provided)",
+  "faq_url": "URL to the platform's FAQ section (if available)",
+  "forum_url": "URL to the platform's community forum (if available)",
+  "example_code_available": "Yes or No",
+  "example_code_languages": "List of programming languages for which example code is available (e.g., Python, JavaScript, Java)",
+  "video_tutorials_available": "Yes or No",
+  "learning_curve_rating": "Easy, Moderate, Difficult, or Very Difficult"
 }
 
-/**
- * Validate documentation records against platforms
- */
-function validateDocumentationAgainstPlatforms(
-    documentationRecords: Documentation[],
-    platformsMap: Map<string, Platform>,
-): Documentation[] {
-    log("Validating documentation records against platforms...", "info")
-
-    // If no documentation records, create default ones for testing
-    if (documentationRecords.length === 0 && platformsMap.size > 0) {
-        log("No documentation records found in CSV, creating default records for testing", "warning")
-        const newDocumentationRecords: Documentation[] = []
-
-        // Create a default documentation record for each platform
-        for (const [platformId, platform] of platformsMap.entries()) {
-            const defaultDocumentation: Documentation = {
-                doc_id: `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                platform_id: platformId,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            }
-            newDocumentationRecords.push(defaultDocumentation)
-            log(`Created default documentation record for platform: ${platform.platform_name}`, "info")
-        }
-
-        return newDocumentationRecords
+Return only the JSON object with realistic, accurate information about ${platform.platform_name}'s documentation.
+        `
+    const enriched = await makeOpenAIRequest<Partial<Documentation>>(openai, prompt)
+    const enrichedDoc: Documentation = {
+      ...doc,
+      ...enriched,
+      updatedAt: new Date().toISOString(),
     }
 
-    const validDocumentationRecords = documentationRecords.filter((documentation) => {
-        const platformId = documentation.platform_id
-        if (!platformId) {
-            log(`Documentation record ${documentation.doc_id || "unknown"} has no platform ID, skipping`, "warning")
-            return false
-        }
-
-        const platformExists = platformsMap.has(platformId)
-        if (!platformExists) {
-            log(
-                `Documentation record ${documentation.doc_id || "unknown"} references non-existent platform ${platformId}, skipping`,
-                "warning",
-            )
-            return false
-        }
-
-        return true
-    })
-
-    log(`Validated ${validDocumentationRecords.length}/${documentationRecords.length} documentation records`, "info")
-    return validDocumentationRecords
-}
-
-/**
- * Enrich documentation data using OpenAI
- */
-async function enrichDocumentationData(documentation: Documentation, platform: Platform): Promise<Documentation> {
-    try {
-        log(`Enriching documentation data for platform: ${platform.platform_name}`, "info")
-
-        const prompt = `
-Provide accurate documentation information for the AI platform "${platform.platform_name}" in JSON format with the following fields:
-- documentation_description: Description of available documentation (e.g., "Comprehensive API reference, tutorials, and guides")
-- doc_quality: Quality assessment of documentation (e.g., "Excellent", "Good", "Average", "Poor")
-- documentation_url: URL to main documentation
-- faq_url: URL to FAQ page
-- forum_url: URL to community forum or discussion board
-- example_code_available: Whether example code is available ("Yes", "No", "Limited")
-- example_code_languages: Programming languages of example code (e.g., "Python, JavaScript, Java, Ruby")
-- video_tutorials_available: Whether video tutorials are available ("Yes", "No", "Limited")
-- learning_curve_rating: Rating of learning curve (e.g., "Gentle", "Moderate", "Steep")
-
-Additional context about the platform:
-Platform URL: ${platform.platform_url || "Not available"}
-Platform category: ${platform.platform_category || "Unknown"}
-Platform sub-category: ${platform.platform_sub_category || "Unknown"}
-Platform description: ${platform.platform_description || "No description available"}
-
-If any information is not known with confidence, use null for that field.
-Return ONLY the JSON object with no additional text.
-`
-
-        // Make OpenAI request with fallback mechanism
-        const enrichedData = await makeOpenAIRequest<Partial<Documentation>>(openai, prompt)
-
-        // Update timestamp
-        const timestamp = new Date().toISOString()
-
-        // Merge with existing documentation data, only updating null/undefined fields
-        const updatedDocumentation: Documentation = { ...documentation }
-        Object.keys(enrichedData).forEach((key) => {
-            if (
-                updatedDocumentation[key] === undefined ||
-                updatedDocumentation[key] === null ||
-                updatedDocumentation[key] === ""
-            ) {
-                updatedDocumentation[key] = enrichedData[key as keyof Partial<Documentation>]
-            }
-        })
-
-        updatedDocumentation.updatedAt = timestamp
-
-        // Validate the enriched documentation data
-        const validation = validateDocumentation(updatedDocumentation)
-        if (!validation.valid) {
-            log(
-                `Validation issues with enriched documentation for ${platform.platform_name}: ${validation.errors.join(", ")}`,
-                "warning",
-            )
-        }
-
-        return updatedDocumentation
-    } catch (error: any) {
-        log(`Error enriching documentation for ${platform.platform_name}: ${error.message}`, "error")
-        return documentation
-    }
-}
-
-/**
- * Process all documentation records with rate limiting
- */
-async function processDocumentationWithRateLimit(
-    documentationRecords: Documentation[],
-    platformsMap: Map<string, Platform>,
-): Promise<Documentation[]> {
-    const enrichedDocumentationRecords: Documentation[] = []
-
-    for (let i = 0; i < documentationRecords.length; i++) {
-        try {
-            // Skip documentation records that already have all fields filled
-            const documentation = documentationRecords[i]
-            const hasAllFields =
-                documentation.documentation_description &&
-                documentation.doc_quality &&
-                documentation.documentation_url &&
-                documentation.example_code_available &&
-                documentation.learning_curve_rating
-
-            if (hasAllFields) {
-                log(
-                    `Skipping documentation ${i + 1}/${documentationRecords.length}: ${documentation.doc_id || "unknown"} (already complete)`,
-                    "info",
-                )
-                enrichedDocumentationRecords.push(documentation)
-                continue
-            }
-
-            // Get associated platform
-            const platform = platformsMap.get(documentation.platform_id) as Platform
-
-            // Enrich documentation data
-            const enrichedDocumentation = await enrichDocumentationData(documentation, platform)
-            enrichedDocumentationRecords.push(enrichedDocumentation)
-
-            // Log progress
-            log(
-                `Processed documentation ${i + 1}/${documentationRecords.length} for platform: ${platform.platform_name}`,
-                "info",
-            )
-
-            // Rate limiting delay (except for last item)
-            if (i < documentationRecords.length - 1) {
-                await applyRateLimit(DELAY_BETWEEN_REQUESTS)
-            }
-        } catch (error: any) {
-            log(`Error processing documentation ${documentationRecords[i].doc_id || "unknown"}: ${error.message}`, "error")
-            enrichedDocumentationRecords.push(documentationRecords[i]) // Add original data if enrichment fails
-        }
+    const validation = validateDocumentation(enrichedDoc)
+    if (!validation.valid) {
+      log(`Validation failed for ${doc.doc_id}: ${validation.errors.join(", ")}`, "warning")
     }
 
-    return enrichedDocumentationRecords
+    return enrichedDoc
+  } catch (error: any) {
+    log(`Failed to enrich documentation ${doc.doc_id}: ${error.message}`, "error")
+    return doc
+  }
 }
 
-/**
- * Main function
- */
+// ---- Processing ----
+async function processDocumentation(docs: Documentation[], platforms: Platform[]): Promise<Documentation[]> {
+  const processed: Documentation[] = []
+
+  for (let i = 0; i < docs.length; i++) {
+    const doc = docs[i]
+
+    if (isComplete(doc)) {
+      log(`Skipping ${doc.doc_id} (already complete)`, "info")
+      processed.push(doc)
+      continue
+    }
+
+    const enriched = await enrichDocumentation(doc, platforms)
+    processed.push(enriched)
+
+    if (i < docs.length - 1) {
+      await applyRateLimit(DELAY)
+    }
+  }
+
+  return processed
+}
+
+// ---- Main ----
 async function main() {
-    try {
-        log("Starting documentation processing...", "info")
+  try {
+    log("Starting documentation processor...", "info")
 
-        // Load platforms and documentation records
-        const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
-        const platformsMap = createLookupMap(platforms, "platform_id")
-
-        let documentationRecords = loadCsvData<Documentation>(DOCUMENTATION_CSV_PATH)
-
-        // Create backup of documentation file if it exists and has data
-        if (fs.existsSync(DOCUMENTATION_CSV_PATH) && documentationRecords.length > 0) {
-            createBackup(DOCUMENTATION_CSV_PATH, BACKUP_DIR)
-        }
-
-        // Validate documentation records against platforms
-        documentationRecords = validateDocumentationAgainstPlatforms(documentationRecords, platformsMap)
-
-        // Enrich documentation data
-        documentationRecords = await processDocumentationWithRateLimit(documentationRecords, platformsMap)
-
-        // Save to CSV
-        saveCsvData(DOCUMENTATION_CSV_PATH, documentationRecords)
-
-        log("Documentation processing completed successfully", "info")
-    } catch (error: any) {
-        log(`Error in main process: ${error.message}`, "error")
-        process.exit(1)
+    // Load platforms data
+    if (!fs.existsSync(PLATFORMS_CSV_PATH)) {
+      log("Platforms.csv not found. Please run process-platforms.ts first.", "error")
+      process.exit(1)
     }
+    const platforms = loadCsvData<Platform>(PLATFORMS_CSV_PATH)
+    log(`Loaded ${platforms.length} platforms`, "info")
+
+    // Load or initialize documentation data
+    const docs = fs.existsSync(DOCUMENTATION_CSV_PATH) ? loadCsvData<Documentation>(DOCUMENTATION_CSV_PATH) : []
+
+    // Create documentation entries for platforms without one
+    const platformIds = new Set(docs.map((doc) => doc.platform_id))
+    const newDocs: Documentation[] = []
+
+    for (const platform of platforms) {
+      if (!platformIds.has(platform.platform_id)) {
+        const newDoc: Documentation = {
+          doc_id: `doc_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          platform_id: platform.platform_id,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        newDocs.push(newDoc)
+        log(`Created new documentation entry for platform: ${platform.platform_name}`, "info")
+      }
+    }
+
+    const allDocs = [...docs, ...newDocs]
+
+    // Create backup if file exists
+    if (fs.existsSync(DOCUMENTATION_CSV_PATH) && fs.statSync(DOCUMENTATION_CSV_PATH).size > 0) {
+      createBackup(DOCUMENTATION_CSV_PATH, BACKUP_DIR)
+    }
+
+    // Process and enrich documentation
+    const enriched = await processDocumentation(allDocs, platforms)
+    saveCsvData(DOCUMENTATION_CSV_PATH, enriched)
+
+    log(`Documentation processor complete. Processed ${enriched.length} records ✅`, "info")
+  } catch (error: any) {
+    log(`Unhandled error: ${error.message}`, "error")
+    process.exit(1)
+  }
 }
 
-// Run the main function
 main()
 
